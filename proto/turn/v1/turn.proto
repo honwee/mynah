@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+// PersonaLive end-of-turn detection contract. cored calls Predict with the
+// AUDIO of the user's just-finished utterance (16 kHz mono float32 LE PCM, the
+// last <=8 s) and gets back P(end-of-turn): high = the user finished, low =
+// they're likely still going — cored holds the turn open and coalesces the next
+// utterance instead of answering prematurely. Judging the waveform (intonation,
+// pace, trailing fillers) rather than the transcript is both more robust and
+// runs in parallel with ASR. The reference worker runs Smart Turn (Pipecat,
+// BSD-2 — an audio semantic VAD), but the slot is PLUGGABLE: any worker that
+// speaks this contract works (or none — then cored answers every utterance).
+// Unary (not streaming): one quick call per finished utterance, off the hot
+// media path.
+package personalive.turn.v1;
+
+service TurnDetector {
+  rpc Predict(PredictRequest) returns (PredictReply);
+  rpc Health(HealthRequest) returns (HealthReply);
+}
+
+message PredictRequest {
+  bytes  audio_pcm = 1;  // the finished utterance: 16 kHz mono float32 LE, last <=8 s
+  string language  = 2;  // ISO code hint ("zh", "en", ...); "" = default threshold
+}
+
+message PredictReply {
+  float eot_prob    = 1;  // P(end-of-turn): high = user finished, low = likely continuing
+  bool  end_of_turn = 2;  // eot_prob >= per-language threshold (worker-side decision)
+  float threshold   = 3;  // the threshold applied (for logging/tuning)
+}
+
+message HealthRequest {}
+message HealthReply {
+  bool   ready  = 1;
+  string detail = 2;
+}

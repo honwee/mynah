@@ -1,0 +1,3 @@
+# EdgeTTS tier — CPU only. edge-tts pulls aiohttp (the HTTP server here too).
+edge-tts>=7.0,<8
+aiohttp>=3.9

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="ink">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mynah 管理控制台</title>
+<link rel="icon" type="image/png" href="assets/favicon.png">
+<link rel="stylesheet" href="app/theme.css">
+</head>
+<body>
+<div id="root"></div>
+
+<!-- 本地化依赖（私有化部署，内网无外网可用）：保持 react → react-dom → babel 顺序 -->
+<script src="./vendor/react-18.3.1.development.js"></script>
+<script src="./vendor/react-dom-18.3.1.development.js"></script>
+<script src="./vendor/babel-standalone-7.29.0.min.js"></script>
+
+<!-- 多语言（中/英）、Mock 后端（仅在真实 API 不可达时启用）与 API 客户端 -->
+<script src="app/i18n.js"></script>
+<script src="app/mock.js"></script>
+<script src="app/api.js"></script>
+
+<!-- UI 与页面 -->
+<script type="text/babel" src="app/tweaks-panel.jsx"></script>
+<script type="text/babel" src="app/ui.jsx"></script>
+<script type="text/babel" src="app/pages-auth.jsx"></script>
+<script type="text/babel" src="app/pages-dashboard.jsx"></script>
+<script type="text/babel" src="app/pages-kbtest.jsx"></script>
+<script type="text/babel" src="app/pages-playground.jsx"></script>
+<script type="text/babel" src="app/pages-kb.jsx"></script>
+<script type="text/babel" src="app/pages-publish.jsx"></script>
+<script type="text/babel" src="app/pages-voices.jsx"></script>
+<!-- EE 功能模块（按功能交付：删此标签 + 此文件即移除该功能，宿主页无声降级）。动作骨架：经 PL_FEATURES 挂进「形象与声音」页 -->
+<script type="text/babel" src="app/features-motion.jsx"></script>
+<script type="text/babel" src="app/pages-config.jsx"></script>
+<script type="text/babel" src="app/pages-sessions.jsx"></script>
+<script type="text/babel" src="app/pages-services.jsx"></script>
+<script type="text/babel" src="app/main.jsx"></script>
+</body>
+</html>

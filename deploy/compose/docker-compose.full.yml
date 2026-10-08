@@ -1,0 +1,500 @@
+# Mynah — 全栈 docker compose（生产拓扑）
+#
+# 一条命令拉起数字人所需的全部有状态与无状态组件：
+#   postgres  数据库（必须带 pgvector）
+#   cored     Go 实时核心 + 控制台
+#   musetalk  ×2  口型引擎池
+#   asr       语音识别 / Opus 解码
+#   tts       语音合成
+#
+# 用法：
+#   cp .env.prod.example .env.prod && 填好 QWEN_RT_KEY / POSTGRES_PASSWORD
+#   docker compose --env-file .env.prod -f docker-compose.full.yml up -d
+#
+# ⚠️ 关于 postgres 镜像：库里建了 `CREATE EXTENSION vector`（0001_init.sql），
+#    官方 postgres:16.3 **不含 pgvector**。已有部署里那个 `postgres:16.3`
+#    其实是本地私建镜像（RepoDigests 为空，history 里能看到 ADD pgvector v0.8.1），
+#    直接照抄 tag 会拉到官方镜像、扩展缺失、知识库整条链路起不来。
+#    这里改用官方 pgvector 镜像，语义明确且可复现。
+#
+# ⚠️ host 网络：cored 走 pion WebRTC（ICE 需要 UDP 端口段），且所有 worker
+#    地址都是 127.0.0.1，因此全部 network_mode: host，没有 compose 端口隔离。
+#    postgres 也因此直接暴露在宿主 5432 上——生产务必设强密码（见 .env.prod）。
+#
+# 未纳入本文件：
+#   ollama  宿主系统服务（systemd），仅本地大脑模式用到，且模型缓存重、
+#           与本栈生命周期无关，容器化收益低。
+#   无 Redis / Memcached —— 频道注册表、检索结果、idle 帧缓存都在 cored 进程内。
+name: mynah
+
+x-host: &host
+  network_mode: host
+  # unless-stopped, NOT always: a container stopped from the console (or by
+  # hand) must STAY stopped. `always` would resurrect it on the next daemon
+  # start and silently undo the operator's action — which is exactly what the
+  # since-removed mynah-tts.service used to do.
+  restart: unless-stopped
+
+x-musetalk: &musetalk-base
+  <<: *host
+  build:
+    context: ../..
+    dockerfile: deploy/compose/worker-musetalk.Dockerfile
+  image: mynah/musetalk:prod
+  working_dir: /app/workers/avatar
+  devices:
+    - nvidia.com/gpu=${MUSETALK_GPU:-1}
+  environment:
+    - PERSONALIVE_GEN=/app/gen/python
+    - CUDA_VISIBLE_DEVICES=0        # CDI maps the requested GPU to index 0
+    - XDG_CACHE_HOME=/cache
+    - TMPDIR=/cache/tmp
+    # VRAM: ~7.7GB steady-state per worker (measured on prod after a day of
+    # traffic incl. concurrent peaks) -> the pair sits at ~15.3/24GB. A fresh
+    # worker reads ~4.6GB only because it hasn't hit the peak yet; do NOT size
+    # a third worker off that number.
+    # - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+  volumes:
+    - ../../workers:/app/workers     # live-edit python, no rebuild
+    # The same tree again at its HOST path, read-only. cored hands workers
+    # absolute paths under it (a built-in portrait as cond_image), and those
+    # strings are also read by the idle-bake worker, which runs bare on the host
+    # where /app does not exist. One path that resolves everywhere beats three
+    # translations — see avatarengine/spec.go, which does this for the workers it
+    # creates itself.
+    - ${POOL_WORKERS_DIR:?set POOL_WORKERS_DIR in .env.prod}:${POOL_WORKERS_DIR:?set POOL_WORKERS_DIR in .env.prod}:ro
+    - ../../gen:/app/gen:ro
+    # Same in-container path as on the host: these are passed as CLI args.
+    - ${MUSETALK_REPO:?set MUSETALK_REPO}:${MUSETALK_REPO:?}:ro
+    - ${MUSETALK_MODELS_DIR:?set MUSETALK_MODELS_DIR}:${MUSETALK_MODELS_DIR:?}:ro
+    - ${MUSETALK_AVATAR_DIR:?set MUSETALK_AVATAR_DIR}:${MUSETALK_AVATAR_DIR:?}:ro
+    - avatar-cache:/cache
+
+services:
+  # ---- PostgreSQL + pgvector -----------------------------------------------
+  # The ONLY stateful service. Everything else can be recreated freely.
+  #
+  # ⚠️ profile 保护：本服务默认**不启动**。已有部署的 postgres
+  #    往往是另一套栈起的容器，而本服务指向同一个数据目录——无 profile 保护时
+  #    一条 `up` 就会在同一份 data 上起第二个实例，直接损坏数据库。
+  #    全新部署才显式启用：
+  #      docker compose --profile db -f docker-compose.full.yml up -d
+  #    已有 postgres 的机器：保持默认，只 up 无状态服务即可。
+  postgres:
+    <<: *host
+    profiles: [db]
+    image: pgvector/pgvector:pg16
+    container_name: mynah-postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      - POSTGRES_DB=${POSTGRES_DB:-personalive}
+      # Bind to loopback only. host networking means this port IS the host's,
+      # and the DSN is loopback anyway.
+      - PGPORT=${POSTGRES_PORT:-5432}
+    volumes:
+      - ${POSTGRES_DATA:?set POSTGRES_DATA in .env.prod}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-personalive}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # ---- cored — Go realtime core + control plane ----------------------------
+  # Deliberately NOT console-controllable (internal/supervisor/docker.go's
+  # registry omits it): stopping cored from the console would kill the console.
+  cored:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/cored.Dockerfile
+    image: mynah/cored:prod
+    container_name: mynah-cored
+    working_dir: /app
+    # GPU visibility ONLY — cored never initializes CUDA, so it does not appear
+    # as a compute process and holds no VRAM. The device is here because CDI
+    # injects the host's nvidia-smi (see /etc/cdi/nvidia.yaml), which is how the
+    # console reads free VRAM to size the avatar pool.
+    #
+    # Every card must be listed: CDI exposes only the requested devices, so a
+    # single index makes nvidia-smi report one card and the capacity panel plans
+    # against a fraction of the machine (it reported "max 0 workers" while
+    # production was running 2 on the card it could not see).
+    #
+    # cored needs to see every GPU for the capacity view; CDI `gpu=all`
+    # (regenerate the CDI spec after GPU changes: nvidia-ctk cdi generate).
+    devices:
+      - nvidia.com/gpu=${CORED_GPUS:-all}
+    volumes:
+      - ../../web:/app/web:ro
+      - ../../assets:/app/assets:ro
+      - ../../tls:/app/tls:ro
+      - ${IDLE_ASSET_DIR:?set IDLE_ASSET_DIR}:${IDLE_ASSET_DIR:?}:ro
+      # cored STATS these to discover finished bakes, and RENAMES into them to
+      # publish one (the last step of an avatar bake), so this mount is
+      # read-write. The workers are what actually read the frames. Same path on
+      # both sides so the id it hands to a worker resolves there too.
+      - ${AVATAR_BAKES_DIR:?set AVATAR_BAKES_DIR in .env.prod}:${AVATAR_BAKES_DIR:?set AVATAR_BAKES_DIR in .env.prod}
+      # Bake scratch: uploaded videos and extracted frames. cored writes here
+      # and bind-mounts the same host path into the one-shot bake container, so
+      # the path must be identical inside and out.
+      - ${AVATAR_BAKE_WORK_DIR:?set AVATAR_BAKE_WORK_DIR in .env.prod}:${AVATAR_BAKE_WORK_DIR:?set AVATAR_BAKE_WORK_DIR in .env.prod}
+      # Engine material, read-only. cored never reads a byte of it — it STATS it
+      # before creating a pool worker, so a missing model dir is a console
+      # refusal naming the path instead of a container that crash-loops. That
+      # check runs INSIDE this container, so every --musetalk-* / --flashhead-*
+      # path must be visible here at its host path or the pool cannot be
+      # composed at all. One root rather than a mount per engine: the paths are
+      # operator-chosen, and MUSETALK_MODELS_DIR is a symlink whose target must
+      # also resolve — both live under this root. The docker socket below is
+      # already root-equivalent, so read-only visibility adds no privilege.
+      # Sub-paths that need write (bakes, scratch) are mounted rw above; deeper
+      # mounts win regardless of order.
+      - ${MATERIAL_ROOT:?set MATERIAL_ROOT in .env.prod}:${MATERIAL_ROOT:?set MATERIAL_ROOT in .env.prod}:ro
+      # Service control: cored drives the Engine API to start/stop its own
+      # components. The socket is root-equivalent on the host — cored only ever
+      # touches the allowlisted names in internal/supervisor/docker.go.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - QWEN_RT_KEY=${QWEN_RT_KEY:?set QWEN_RT_KEY in .env.prod}
+      # 待机烘焙链的三个接头（internal/avatarbake）。默认值指向 /data/personalive，
+      # 那是 8 卡时代的老盘，早已不存在 —— 不显式给就等于这条链哑着。
+      #   · HTTP：烘焙 worker 的地址（host 网络，就是上面那个服务）
+      #   · CACHE：和 worker 的约会地点。cored 按 (形象, 骨架) 算出同名文件，
+      #     命中就直接热应用，不再发起 6 分钟的烘焙
+      #   · BUILTIN：`builtin:d9` 这类骨架引用在 **cored 内部**解析成
+      #     <dir>/d9.pkl，再把解析后的路径交给 worker，所以这个路径必须在两边
+      #     的文件系统视角里都成立 —— 用宿主原路径是唯一解
+      - PL_AVATAR_BAKE_HTTP=http://127.0.0.1:${IDLEBAKE_PORT:-9405}
+      - PL_BAKE_CACHE_DIR=${IDLEBAKE_CACHE_DIR:?set IDLEBAKE_CACHE_DIR}
+      - PL_MOTION_BUILTIN_DIR=${MOTION_BUILTIN_DIR:?set MOTION_BUILTIN_DIR}
+    command:
+      - --listen=:${CORED_HTTP_PORT:-8020}
+      - --tls-listen=:${CORED_TLS_PORT:-8443}
+      - --tls-cert=${CORED_TLS_CERT:-tls/server.fullchain.crt}
+      - --tls-key=${CORED_TLS_KEY:-tls/server.key}
+      # Dynamic pool: cored probes this port range and joins whichever workers
+      # answer, so the console can add/remove workers without restarting cored.
+      # The range must cover both the compose-managed workers below (9414/9417 —
+      # note they are NOT contiguous) and room for dynamically created slots.
+      - --worker-pool=${WORKER_POOL:-127.0.0.1:9414-9421}
+      - --tts=${TTS_URL:-http://127.0.0.1:8091}
+      - --voice=${VOICE:-zh-CN-XiaoxiaoNeural}
+      - --web=/app/web/user
+      - --stun=${STUN_URLS:-stun:stun.l.google.com:19302}
+      - --video-codec=h264
+      # Both are keyed by avatar id now: "<avatar>=<path>" for idle,
+      # "<action>@<avatar>=<path>" for clips (bare = the "default" avatar). An
+      # avatar with no entry gets engine-rendered idle instead — the right
+      # person, but a worker busy for as long as the channel is open, so a
+      # channel bound to a baked avatar wants its own key here.
+      - --idle-ivf=${IDLE_IVF:?set IDLE_IVF}
+      - --idle-silence=assets/silence_20ms.opus
+      - --actions=${ACTIONS:?set ACTIONS}
+      - --llm=${LLM_URL:-http://127.0.0.1:11434}
+      - --llm-model=${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+      - --qwen-rt-url=${QWEN_RT_URL:?set QWEN_RT_URL}
+      - --qwen-rt-model=${QWEN_RT_MODEL:-qwen-audio-3.0-realtime-flash}
+      - --qwen-rt-voice=${QWEN_RT_VOICE:-longanqian}
+      - --asr=${ASR_ADDR:-127.0.0.1:9402}
+      - --db=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-personalive}
+      - --admin-listen=127.0.0.1:${ADMIN_HTTP_PORT:-9080}
+      - --admin-tls-listen=:${ADMIN_TLS_PORT:-9443}
+      - --admin-web=/app/web/admin
+      - --docker-socket=/var/run/docker.sock
+      # Pool material: where each engine's weights/repo/speaking asset live ON
+      # THE HOST. EVERY worker the console creates is built from these — the pool
+      # is a declared composition (musetalk N + flashhead M can be online at the
+      # same time), so there is no "clone a running worker" shortcut for the
+      # engine being added. An engine with no material declared is refused by the
+      # console rather than started into a crash-loop.
+      - --musetalk-models-dir=${MUSETALK_MODELS_DIR}
+      - --musetalk-repo=${MUSETALK_REPO}
+      - --musetalk-avatar-dir=${MUSETALK_AVATAR_DIR}
+      - --flashhead-dir=${FLASHHEAD_DIR:-}
+      - --flashhead-avatar=${FLASHHEAD_AVATAR:-}
+      - --pool-gpu=${MUSETALK_GPU:-1}
+      - --pool-workers-dir=${POOL_WORKERS_DIR:?set POOL_WORKERS_DIR in .env.prod}
+      - --pool-gen-dir=${POOL_GEN_DIR:?set POOL_GEN_DIR in .env.prod}
+      - --pool-cache-volume=${POOL_CACHE_VOLUME:-personalive_avatar-cache}
+      # Built-in portraits (the JPEGs behind avatar ids like "f"). A HOST path,
+      # not /app/workers/avatar/assets — three processes with three filesystem
+      # views consume this one string:
+      #   · the avatar workers get it as cond_image (containers; the workers tree
+      #     is bind-mounted at BOTH /app/workers and its host path, see
+      #     x-musetalk below and avatarengine/spec.go);
+      #   · cored stats it before queueing an idle bake (container; visible via
+      #     MATERIAL_ROOT);
+      #   · the idle-bake worker on :9405 reads the file (a bare HOST process —
+      #     /app does not exist for it at all).
+      # The container-only default therefore failed with
+      # `source image for avatar "f" not found on server`. The host path is the
+      # only one all three can resolve.
+      - --avatar-assets-dir=${AVATAR_ASSETS_DIR:?set AVATAR_ASSETS_DIR in .env.prod}
+      # Baked avatars: scanned at startup so the console can offer them as
+      # bindable appearances. Path must be what the WORKERS see, since cored
+      # forwards it verbatim as cond_image.
+      - --avatar-bakes-dir=${AVATAR_BAKES_DIR:-}
+      # Avatar baking: uploaded video -> frames -> MuseTalk avatar directory,
+      # run as two one-shot containers off the docker socket above. The image is
+      # the serving image plus ffmpeg and face_alignment; build it with
+      #   docker build -t mynah/musetalk-bake:prod \
+      #     -f deploy/compose/worker-musetalk-bake.Dockerfile .
+      # Baking shares the pool's GPU (--pool-gpu). One job at a time, but it
+      # does contend with live sessions for VRAM — bake off-peak.
+      - --avatar-bake-image=${AVATAR_BAKE_IMAGE:-mynah/musetalk-bake:prod}
+      - --avatar-bake-work-dir=${AVATAR_BAKE_WORK_DIR:?set AVATAR_BAKE_WORK_DIR in .env.prod}
+      # face_alignment's FAN weights (~180MB). Pointing at the host cache keeps
+      # a bake fully offline; omit it and the first bake downloads them.
+      - --avatar-bake-torch-cache=${AVATAR_BAKE_TORCH_CACHE:-/root/.cache/torch}
+    # NO depends_on postgres — compose auto-activates a profiled dependency,
+    # which would defeat the `db` profile guard above and risk starting a
+    # second postgres on an in-use data directory. cored log.Fatal's when the
+    # DB is unreachable and `restart: unless-stopped` retries it, so ordering
+    # resolves itself either way.
+
+  # ---- MuseTalk 1.5 pool ----------------------------------------------------
+  # Two workers, one session each. cored dispatches to whichever is free AND
+  # runs the engine the channel's avatar needs, and returns 503「数字人正忙」
+  # when they are all busy; the console enforces the per-engine and pool-wide
+  # concurrency quotas.
+  #
+  # These two are the pool's compose-managed floor: the console may Stop/Start
+  # them as part of a composition change but never removes them. Anything beyond
+  # them is a dynamic slot (mynah-<engine>-<n>) the console creates, and
+  # whether one more fits is decided by avatarengine.PlanMix against live VRAM —
+  # 2×musetalk + 1×flashhead does fit on GPU1, a third musetalk does not.
+  musetalk:
+    <<: *musetalk-base
+    container_name: mynah-musetalk
+    command:
+      - musetalk_server.py
+      - --port=${MUSETALK_PORT:-9414}
+      - --models-dir=${MUSETALK_MODELS_DIR}
+      - --musetalk-repo=${MUSETALK_REPO}
+      - --avatar-dir=${MUSETALK_AVATAR_DIR}
+
+  musetalk2:
+    <<: *musetalk-base
+    container_name: mynah-musetalk2
+    command:
+      - musetalk_server.py
+      - --port=${MUSETALK2_PORT:-9417}
+      - --models-dir=${MUSETALK_MODELS_DIR}
+      - --musetalk-repo=${MUSETALK_REPO}
+      - --avatar-dir=${MUSETALK_AVATAR_DIR}
+
+  # ---- 待机烘焙 worker（:9405，LivePortrait + FlashHead）---------------------
+  # 控制台「烘焙待机」那条链的执行端：cored 把作业 POST 到这里，它 fork 出
+  # bake_idle_asset.sh —— FlashHead 渲一帧中性脸 → LivePortrait 把骨架动作迁上去
+  # → ffmpeg 拆帧 → 编成 cored 可直接回放的 idle_<形象>.h264f。产物落进
+  # IDLEBAKE_CACHE_DIR，cored 只读那一个目录就能热应用（见 internal/avatarbake）。
+  #
+  # ⚠️ 这个服务是 2026-07-30 才从宿主 systemd 裸进程（mynah-avatartrain.service
+  #    + run_avatartrain_worker.sh + 宿主两个 conda env）搬进来的。搬的原因就是它
+  #    烂过一次：机器重建后数据盘路径整体搬家，
+  #    容器化的服务跟着 .env 改了，这个宿主脚本没人管，于是烘焙作业被接收、入队、
+  #    然后在 Stage A 静默失败。上线本服务前必须先
+  #    `systemctl disable --now mynah-avatartrain`，否则 :9405 端口冲突。
+  #
+  # 一个容器跑两套 runtime：宿主上 FlashHead 和 LivePortrait 是两个 conda env，
+  # 镜像里它们依赖兼容（同 py3.10 / torch2.5.1+cu121），所以 PL_*_PY 全指向容器
+  # 自带的 python，从此不依赖宿主 conda。
+  #
+  # 常驻不设 profile：进程本身是个 stdlib HTTP 编排器，空闲时 0 显存（模型都在
+  # 子进程里加载），跟今天的 systemd 单元行为一致。设 profile 的话控制台点「烘焙」
+  # 只会得到 connection refused。
+  avatartrain:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-avatartrain.Dockerfile
+      args:
+        # 派生镜像，基础镜像必须先构建（见 worker-flashhead.Dockerfile）。
+        FLASHHEAD_IMAGE: mynah/flashhead:prod
+    image: mynah/avatartrain:prod
+    container_name: mynah-avatartrain
+    working_dir: /app/workers/avatartrain
+    devices:
+      - nvidia.com/gpu=${IDLEBAKE_GPU:-1}
+    environment:
+      - PERSONALIVE_GEN=/app/gen/python
+      - CUDA_VISIBLE_DEVICES=0        # CDI maps the requested GPU to index 0
+      - XDG_CACHE_HOME=/cache
+      - TMPDIR=/cache/tmp
+      # 各阶段的 python。宿主脚本上这里是三个 conda env 的绝对路径（其中
+      # PL_BAKE_GPU 还写死过一个 8 卡时代的 3 号卡）；容器里全部塌缩成一个 python
+      # 和恒定的 0 号卡 —— 这正是容器化要买的东西。
+      - PL_TRAIN_PY=python
+      - PL_LIVEPORTRAIT_PY=python
+      - PL_FLASHHEAD_PY=python
+      - PL_BAKE_GPU=0
+      # 阶段依赖的仓库/工具，宿主路径原样可见（走下面的 MATERIAL_ROOT 只读挂载）。
+      - PL_LIVEPORTRAIT_ROOT=${LIVEPORTRAIT_DIR:?set LIVEPORTRAIT_DIR}
+      - PL_FLASHHEAD_DIR=${FLASHHEAD_DIR:?set FLASHHEAD_DIR}
+      # render_neutral.py 来自 LiveTalking，**不在本仓库里**，指向你自己的副本。
+      - PL_RENDER_NEUTRAL=${RENDER_NEUTRAL:?set RENDER_NEUTRAL}
+      - PL_BAKE_IDLE_PY=/app/workers/avatar/bake_idle.py   # 源码 bind-mount
+      # 产出目录。CACHE 那个是和 cored 的约会地点：两边算出同一个
+      # idle_<形象>__<骨架>.h264f 路径，命中即秒切、不再烘。
+      - PL_TRAIN_ARTIFACT_DIR=${IDLEBAKE_TRAIN_DIR:?set IDLEBAKE_TRAIN_DIR}
+      - PL_MOTION_PKL_DIR=${IDLEBAKE_MOTION_DIR:?set IDLEBAKE_MOTION_DIR}
+      - PL_BAKE_DIR=${IDLEBAKE_ASSET_DIR:?set IDLEBAKE_ASSET_DIR}
+      - PL_BAKE_CACHE_DIR=${IDLEBAKE_CACHE_DIR:?set IDLEBAKE_CACHE_DIR}
+      # 和 flashhead 引擎共用 inductor/triton 缓存（Stage A 渲的是同一个模型）。
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+      # 烘焙只渲**一帧**中性脸，不需要稳态吞吐，所以默认关掉 torch.compile ——
+      # 否则每次烘焙都要先白付约 285 秒编译。
+      - FLASHHEAD_COMPILE_MODEL=0
+      - FLASHHEAD_COMPILE_VAE=0
+    volumes:
+      - ../../workers:/app/workers     # bake_idle_asset.sh / bake_idle.py / halfbody.py
+      - ../../gen:/app/gen:ro
+      # 引擎素材公共根，只读、宿主路径原样。LivePortrait / SoulX-FlashHead /
+      # LiveTalking 的 render_neutral.py / 内置肖像（cored 把宿主绝对路径原样传给
+      # 本服务）全在这一个根下面 —— 和 cored 用同一条口径，见上面 cored 的注释。
+      - ${MATERIAL_ROOT:?set MATERIAL_ROOT in .env.prod}:${MATERIAL_ROOT:?set MATERIAL_ROOT in .env.prod}:ro
+      # 产出目录要可写。它们都落在 MATERIAL_ROOT 之下，靠"更深的挂载点胜出"覆盖
+      # 掉上面那层只读（与 cored 的 AVATAR_BAKES_DIR 同一手法）。
+      - ${IDLEBAKE_TRAIN_DIR:?}:${IDLEBAKE_TRAIN_DIR:?}
+      - ${IDLEBAKE_MOTION_DIR:?}:${IDLEBAKE_MOTION_DIR:?}
+      - ${IDLEBAKE_ASSET_DIR:?}:${IDLEBAKE_ASSET_DIR:?}
+      - ${IDLEBAKE_CACHE_DIR:?}:${IDLEBAKE_CACHE_DIR:?}
+      - avatar-cache:/cache
+    command:
+      - server.py
+      - --port=${IDLEBAKE_PORT:-9405}
+
+  # ---- ASR — SenseVoice + fsmn-VAD -----------------------------------------  # Under a cloud brain with cloud turn detection the SenseVoice model never
+  # runs — but this process is still the stack's ONLY Opus decoder, so stopping
+  # it makes the avatar deaf. See internal/session/cloudvad.go.
+  #
+  # Model paths are hardcoded in workers/asr/server.py to
+  # /root/.cache/modelscope/..., so the cache must mount at that literal path
+  # and be pre-provisioned (the worker runs disable_update=True, never downloads).
+  asr:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-asr.Dockerfile
+    image: mynah/asr:prod
+    container_name: mynah-asr
+    working_dir: /app/workers/asr
+    devices:
+      - nvidia.com/gpu=${ASR_GPU:-1}
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - XDG_CACHE_HOME=/cache
+      - TMPDIR=/cache/tmp
+    volumes:
+      - ../../workers:/app/workers
+      - ../../gen:/app/gen:ro
+      - ${MODELSCOPE_CACHE:?set MODELSCOPE_CACHE}:/root/.cache/modelscope:ro
+      - avatar-cache:/cache
+    command:
+      - server.py
+      - --port=${ASR_PORT:-9402}
+      - --http-port=${ASR_HTTP_PORT:-9404}
+      # ASR_EXTRA_ARGS 为空时落到 --device=cuda:0；设为 --decode-only 时替换之（不要产生空参数）
+      - ${ASR_EXTRA_ARGS:---device=cuda:0}
+      # ASR_EXTRA_ARGS=--decode-only  frees ~1.4GB VRAM by skipping the
+      # SenseVoice + fsmn-VAD load, leaving a pure Opus->PCM decoder. Only
+      # valid when EVERY session is cloud-VAD (brain=qwen + cloud turn mode) —
+      # a session that asks for transcription is rejected with an error, and
+      # the voice-clone reference-text autofill stops working.
+      # Switching 语音轮次 back to 本地 requires restarting this without it.
+
+  # ---- TTS — vllm-omni serving Qwen3-TTS -----------------------------------
+  # Built from the vllm-omni checkout's OWN upstream docker/Dockerfile.cuda
+  # (pinned to the same vllm v0.22.0 the host env runs) — we don't maintain one.
+  #
+  # Not needed for qwen cloud-brain conversations, but load-bearing for the
+  # console voice list, voice-clone upload/preview, and every local-brain
+  # session. Cold start ~2.5 min (model load + torch.compile + CUDA graph).
+  # ---- EdgeTTS — zero-cost TTS tier (default) --------------------------------
+  # CPU only, no GPU, no model download, needs outbound internet. Same contract
+  # as the Qwen3-TTS service below. Production best practice is Qwen3-TTS
+  # (profile qwen-tts) or a cloud key; this exists so day one needs nothing.
+  tts-edge:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-tts-edge.Dockerfile
+    image: mynah/tts-edge:prod
+    container_name: mynah-tts-edge
+    environment:
+      - TTS_EDGE_PORT=${TTS_PORT:-8091}
+      - TTS_EDGE_DEFAULT_VOICE=${VOICE:-zh-CN-XiaoxiaoNeural}
+
+  # ---- Qwen3-TTS via vLLM-omni — reference / best-practice TTS (opt-in) --------
+  #   docker compose --profile qwen-tts --env-file .env.prod -f docker-compose.full.yml up -d tts
+  # Stop tts-edge first (same TTS_PORT) or give one of them another port.
+  tts:
+    <<: *host
+    profiles: [qwen-tts]
+    build:
+      context: ${VLLM_OMNI_DIR:-/srv/third_party/vllm-omni}
+      dockerfile: docker/Dockerfile.cuda
+    image: mynah/tts:prod
+    container_name: mynah-tts
+    working_dir: /workspace
+    devices:
+      - nvidia.com/gpu=${TTS_GPU:-0}
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - VLLM_USE_FLASHINFER_SAMPLER=0
+    volumes:
+      - ${TTS_MODEL_DIR:-/srv/models/qwen3-tts}:${TTS_MODEL_DIR:-/srv/models/qwen3-tts}:ro
+      - tts-cache:/root/.cache
+    entrypoint: ["vllm"]
+    command:
+      - serve
+      - ${TTS_MODEL_DIR}
+      - --deploy-config=vllm_omni/deploy/qwen3_tts.yaml
+      - --omni
+      - --port=${TTS_PORT:-8091}
+      - --trust-remote-code
+      - --served-model-name=${TTS_MODEL_NAME:-qwen3-tts-customvoice}
+      - --gpu-memory-utilization=${TTS_GPU_UTIL:-0.45}
+
+  # ---- Redis（可选，默认不启动） --------------------------------------------
+  # ⚠️ 目前**没有任何代码路径消费 Redis**。cored 的缓存全在进程内（频道注册表、
+  #    检索结果、idle 帧），会话状态也绑在 WebRTC 连接上、天然单实例。所以这
+  #    是一个「先把位置留出来」的基础设施件，不是已接线的依赖。
+  #
+  # 用 profile 显式 opt-in，避免默认 up 时白占内存：
+  #   docker compose --profile redis -f docker-compose.full.yml up -d
+  #
+  # 什么时候它才真正有用：cored 需要多实例（此时频道注册表/配置快照要共享）、
+  # 或要做跨实例的会话亲和与并发配额。单机单实例下加它只增运维面。
+  redis:
+    <<: *host
+    profiles: [redis]
+    image: redis:7.4-alpine
+    container_name: mynah-redis
+    command:
+      - redis-server
+      - --port
+      - "${REDIS_PORT:-6379}"
+      - --appendonly
+      - "yes"
+      # 绑回环：host 网络下这个端口就是宿主端口，别裸奔到公网。
+      - --bind
+      - 127.0.0.1
+      - --maxmemory
+      - "${REDIS_MAXMEMORY:-256mb}"
+      - --maxmemory-policy
+      - allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "${REDIS_PORT:-6379}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  avatar-cache:
+  tts-cache:
+  redis-data:

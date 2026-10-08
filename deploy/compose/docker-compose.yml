@@ -1,0 +1,232 @@
+# Mynah dev/debug stack — cored + avatar(FlashHead) + turn-detector.
+# Scope: only the services you iterate on are containerized. TTS(:8091)/LLM
+# ollama(:11434)/ASR(:9402)/postgres stay as host-native services; containers
+# reach them over the host network. Safe to run next to another cored on the
+# same host — pick fresh ports + a dedicated GPU in .env.
+#
+# Usage:  cp .env.example .env  &&  edit  &&  docker compose up -d --build
+# host networking is used because cored does pion WebRTC (ICE needs UDP ranges)
+# and every --worker/--tts/--llm/--asr already targets 127.0.0.1.
+name: mynah-dev
+
+x-host: &host
+  network_mode: host
+  restart: unless-stopped
+
+services:
+  cored:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/cored.Dockerfile
+    image: mynah/cored:dev
+    working_dir: /app
+    volumes:
+      - ../../web:/app/web:ro
+      - ../../assets:/app/assets:ro
+      - ../../tls:/app/tls:ro
+    command:
+      - --listen=:${CORED_HTTP_PORT:-8050}
+      - --tls-listen=:${CORED_TLS_PORT:-8455}
+      - --tls-cert=${CORED_TLS_CERT:-tls/cored.crt}
+      - --tls-key=${CORED_TLS_KEY:-tls/cored.key}
+      - --worker=${AVATAR_ADDR:-127.0.0.1:9421}
+      - --tts=${TTS_URL:-http://127.0.0.1:8091}
+      - --voice=${VOICE:-zh-CN-XiaoxiaoNeural}
+      - --web=web/user
+      - --stun=stun:stun.l.google.com:19302
+      - --video-codec=h264
+      - --llm=${LLM_URL:-http://127.0.0.1:11434}
+      - --llm-model=${LLM_MODEL:-qwen2.5:7b-instruct-q4_K_M}
+      - --llm-key=${LLM_KEY:-}
+      - --asr=${ASR_ADDR:-127.0.0.1:9402}
+      - --turn-detector=${TURN_ADDR:-127.0.0.1:9416}
+      - --turn-grace-ms=700
+      - --turn-min-interrupt-ms=0
+    # depends_on only orders start, not readiness — cored retries the avatar gRPC
+    # dial regardless, so it stays decoupled from which avatar engine is active
+    # (default flashhead, or the wav2lipls profile).
+    depends_on: [turn, tts-edge]
+
+  # ---- EdgeTTS — zero-cost TTS tier (default) --------------------------------
+  # CPU only, no model, needs outbound internet. Same OpenAI-compatible contract
+  # as the reference Qwen3-TTS stack, so cored does not care which one answers
+  # on TTS_URL. For voice cloning / best quality run deploy/setup/tts.sh
+  # (Qwen3-TTS) or point TTS_URL at a cloud provider and stop this service.
+  tts-edge:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-tts-edge.Dockerfile
+    image: mynah/tts-edge:dev
+    environment:
+      - TTS_EDGE_PORT=${TTS_PORT:-8091}
+      - TTS_EDGE_DEFAULT_VOICE=${VOICE:-zh-CN-XiaoxiaoNeural}
+
+  # ---- wav2lipLS — light/low-VRAM avatar engine (opt-in via `--profile wav2lipls`)
+  # The default `up` runs FlashHead (below). Prefer wav2lipLS on modest GPUs or
+  # when you need maximum frame-rate headroom:
+  #   AVATAR_ADDR=127.0.0.1:9420 docker compose --profile wav2lipls up -d cored avatar turn
+  avatar:
+    <<: *host
+    profiles: [wav2lipls]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-avatar.Dockerfile
+    image: mynah/avatar:dev
+    working_dir: /app/workers/avatar
+    devices:
+      - nvidia.com/gpu=${AVATAR_GPU:-2}
+    environment:
+      - PERSONALIVE_GEN=/app/gen/python
+      - CUDA_VISIBLE_DEVICES=0          # CDI maps the requested GPU to index 0
+      - XDG_CACHE_HOME=/cache
+      - TMPDIR=/cache/tmp
+      - WAV2LIPLS_HUBERT_DIR=${WAV2LIPLS_HUBERT_DIR:-${PL_MODELS_DIR:?set PL_MODELS_DIR in .env}/hubert-large-ls960-ft}
+    volumes:
+      - ../../workers:/app/workers       # live-edit python, no rebuild
+      - ../../gen:/app/gen:ro
+      - ${PL_MODELS_DIR:?set PL_MODELS_DIR in .env}:${PL_MODELS_DIR:?set PL_MODELS_DIR in .env}:ro
+      - avatar-cache:/cache
+    command:
+      - wav2lipls_server.py
+      - --port=${AVATAR_PORT:-9420}
+      - --face-size=${FACE_SIZE:-384}
+      - --avatar-dir=${AVATAR_DIR:-${PL_MODELS_DIR:?set PL_MODELS_DIR in .env}/avatars/personalive-default}
+      - --ckpt=${WAV2LIPLS_CKPT:-${PL_MODELS_DIR:?set PL_MODELS_DIR in .env}/wav2lipls/wav2lipls-${FACE_SIZE:-384}.pth}
+
+  # ---- Turn detector — Smart Turn v3.2 (Pipecat, BSD-2), audio end-of-turn.
+  # The 32MB ONNX model is bundled in the repo (workers/turn/models/) and
+  # visible via the workers bind-mount — no download, no model dir to provision.
+  turn:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-turn.Dockerfile
+    image: mynah/turn:dev
+    working_dir: /app/workers/turn
+    environment:
+      - PERSONALIVE_GEN=/app/gen/python
+      - TURN_INTRA_OP_THREADS=${TURN_INTRA_OP_THREADS:-4}  # onnx CPU threads (~28ms at 4)
+    volumes:
+      - ../../workers:/app/workers       # includes models/smart-turn-v3.2.onnx
+      - ../../gen:/app/gen:ro
+    command:
+      - server.py
+      - --port=${TURN_PORT:-9416}
+
+  # ---- FlashHead — DEFAULT avatar engine (part of a plain `up`) --------------
+  # SoulX-FlashHead (Apache-2.0) diffusion talking-head — best quality. Speaks the
+  # bundled default portrait (workers/avatar/assets/mynah-default.jpg); no
+  # baked asset needed. Weights + the engine repo are fetched by
+  # deploy/compose/setup-flashhead.sh into FLASHHEAD_DIR (nothing private/vendored).
+  # Its deps (diffusers/xfuser/mediapipe) live in mynah/flashhead:dev.
+  flashhead:
+    <<: *host
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-flashhead.Dockerfile
+    image: mynah/flashhead:dev
+    working_dir: /app/workers/avatar
+    devices:
+      - nvidia.com/gpu=${FLASHHEAD_GPU:-${AVATAR_GPU:-2}}
+    environment:
+      - PERSONALIVE_GEN=/app/gen/python
+      - FLASHHEAD_DIR=${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}
+      - CUDA_VISIBLE_DEVICES=0          # CDI maps the requested GPU to index 0
+      - XDG_CACHE_HOME=/cache
+      - TMPDIR=/cache/tmp
+      # Persist the torch.compile (inductor) + triton kernel caches on the named
+      # volume so a container recreate reuses them — first warmup pays the ~290s
+      # JIT, every restart after is seconds (cache is keyed by GPU arch, same
+      # across 4090s). Without this, every recreate recompiles from scratch.
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+      # torch.compile gates (needs the flashhead-compile-env.patch applied to the
+      # bind-mounted SoulX-FlashHead repo; setup-flashhead.sh applies it). Default
+      # "0" (compile OFF): measured ~14s cold start at 1.56x realtime — 10x faster
+      # than compile-on's ~139s for a steady-state drop from 2.28x to 1.56x (still
+      # comfortably realtime). Set both to "1" to restore max throughput headroom
+      # at the cost of the ~139s warmup. (prod :9412 is independent and unaffected.)
+      - FLASHHEAD_COMPILE_MODEL=${FLASHHEAD_COMPILE_MODEL:-0}
+      - FLASHHEAD_COMPILE_VAE=${FLASHHEAD_COMPILE_VAE:-0}
+    volumes:
+      - ../../workers:/app/workers       # includes assets/mynah-default.jpg
+      - ../../gen:/app/gen:ro
+      - ${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}:${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}:ro
+      - avatar-cache:/cache
+    command:
+      - server.py
+      - --port=${FLASHHEAD_PORT:-9421}
+      - --avatar=${FLASHHEAD_AVATAR:-/app/workers/avatar/assets/mynah-default.jpg}
+      # Idle loop is OPTIONAL — empty = engine falls back to generated silence.
+      # Bake one (LivePortrait) and set FLASHHEAD_IDLE_DIR to improve idle motion.
+      - --idle-dir=${FLASHHEAD_IDLE_DIR:-}
+
+  # ---- Avatar-TRAINING worker (opt-in via `--profile avatartrain`) -----------
+  # The image-training pipeline orchestrator (:9405). Not part of the realtime
+  # path — driven by the control plane (admin upload -> queue -> bake). stdlib
+  # HTTP, but /extract + /bake shell out to LivePortrait + FlashHead stages. The
+  # unified mynah/avatartrain:dev image runs BOTH stage runtimes in one
+  # python (deps are compatible), so PL_*_PY all point at the in-container python.
+  avatartrain:
+    <<: *host
+    profiles: [avatartrain]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/worker-avatartrain.Dockerfile
+    image: mynah/avatartrain:dev
+    working_dir: /app/workers/avatartrain
+    devices:
+      - nvidia.com/gpu=${AVATARTRAIN_GPU:-3}
+    environment:
+      - PERSONALIVE_GEN=/app/gen/python
+      - CUDA_VISIBLE_DEVICES=0          # CDI maps the requested GPU to index 0
+      - XDG_CACHE_HOME=/cache
+      - TMPDIR=/cache/tmp
+      # Both /extract (LivePortrait) and /bake (FlashHead + LivePortrait) stages
+      # run in THIS container's python — the host's two conda envs collapse to one.
+      - PL_TRAIN_PY=python
+      - PL_LIVEPORTRAIT_PY=python
+      - PL_FLASHHEAD_PY=python
+      - PL_LIVEPORTRAIT_ROOT=${LIVEPORTRAIT_DIR:?set LIVEPORTRAIT_DIR in .env}
+      - PL_FLASHHEAD_DIR=${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}
+      # render_neutral.py is an external tool (LiveTalking) — NOT shipped in this
+      # repo. Point RENDER_NEUTRAL at your own copy to enable idle baking.
+      - PL_RENDER_NEUTRAL=${RENDER_NEUTRAL:?set RENDER_NEUTRAL in .env (LiveTalking tools/render_neutral.py)}
+      # face-parse-bisent weights for half-body mode (optional). Bring your own.
+      - PL_FACEPARSE_DIR=${FACEPARSE_DIR:-}
+      - PL_BAKE_IDLE_PY=/app/workers/avatar/bake_idle.py   # bind-mounted source
+      - PL_BAKE_GPU=0                  # per-stage CUDA id inside the 1-GPU container
+      - PL_TRAIN_ARTIFACT_DIR=${TRAIN_ARTIFACT_DIR:?set TRAIN_ARTIFACT_DIR in .env}
+      - PL_MOTION_PKL_DIR=${MOTION_PKL_DIR:?set MOTION_PKL_DIR in .env}
+      - PL_BAKE_DIR=${BAKE_DIR:?set BAKE_DIR in .env}
+      - PL_BAKE_CACHE_DIR=${BAKE_CACHE_DIR:?set BAKE_CACHE_DIR in .env}
+      # share the inductor/triton cache with the flashhead service (bake renders
+      # a FlashHead neutral frame, which pays the same compile)
+      - TORCHINDUCTOR_CACHE_DIR=/cache/inductor
+      - TRITON_CACHE_DIR=/cache/triton
+      # Baking renders ONE neutral FlashHead frame offline — it does NOT need the
+      # compiled steady-state throughput, so default compile OFF to skip the ~285s
+      # torch.compile that would otherwise dominate every bake's Stage A. (Needs the
+      # flashhead-compile-env.patch on the bind-mounted repo; same env the engine reads.)
+      - FLASHHEAD_COMPILE_MODEL=${AVATARTRAIN_COMPILE_MODEL:-0}
+      - FLASHHEAD_COMPILE_VAE=${AVATARTRAIN_COMPILE_VAE:-0}
+    volumes:
+      - ../../workers:/app/workers       # bake_idle.py / extract_template.py / bake_idle_asset.sh
+      - ../../gen:/app/gen:ro
+      # stage runtimes (repos) + models, read-only, same in-container path
+      - ${LIVEPORTRAIT_DIR:?set LIVEPORTRAIT_DIR in .env}:${LIVEPORTRAIT_DIR:?set LIVEPORTRAIT_DIR in .env}:ro
+      - ${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}:${FLASHHEAD_DIR:?set FLASHHEAD_DIR in .env (bash deploy/compose/setup-flashhead.sh clones it)}:ro
+      # output dirs (read-write): artifacts, motion .pkl, baked idle loops, cache
+      - ${TRAIN_ARTIFACT_DIR:?set TRAIN_ARTIFACT_DIR in .env}:${TRAIN_ARTIFACT_DIR:?set TRAIN_ARTIFACT_DIR in .env}
+      - ${MOTION_PKL_DIR:?set MOTION_PKL_DIR in .env}:${MOTION_PKL_DIR:?set MOTION_PKL_DIR in .env}
+      - ${BAKE_DIR:?set BAKE_DIR in .env}:${BAKE_DIR:?set BAKE_DIR in .env}
+      - ${BAKE_CACHE_DIR:?set BAKE_CACHE_DIR in .env}:${BAKE_CACHE_DIR:?set BAKE_CACHE_DIR in .env}
+      - avatar-cache:/cache
+    command:
+      - server.py
+      - --port=${AVATARTRAIN_PORT:-9425}
+
+volumes:
+  avatar-cache:

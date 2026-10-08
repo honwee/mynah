@@ -1,0 +1,39 @@
+# Mynah MuseTalk 1.5 avatar worker — the engine PRODUCTION runs (:9414/:9417).
+# Pins mirror the host `flashhead` conda env, which is what actually drives
+# MuseTalk in production today. torch's cu121 wheel bundles the CUDA runtime,
+# so only the NVIDIA driver (via CDI) is needed at runtime.
+#
+# On diffusers: upstream MuseTalk's requirements.txt pins diffusers==0.30.2, but
+# production has been serving on 0.36.0 (the flashhead env) since the engine was
+# integrated. The engine only calls AutoencoderKL and UNet2DConditionModel with
+# a static config, so the newer pin is the verified one — keep 0.36.0 rather
+# than "fixing" it toward upstream.
+#
+# Deliberately omitted vs upstream MuseTalk requirements.txt: tensorflow /
+# tensorboard / gradio / moviepy / gdown / ffmpeg-python. The gRPC serving path
+# imports only musetalk.models.{vae,unet} + musetalk.utils.{blending,
+# audio_processor}, whose real needs are diffusers/torch/torchvision/librosa/
+# einops/transformers/PIL/cv2. FaceParsing is a BAKE-time dep (blending.py takes
+# an already-constructed fp object), so it stays out of the serving image.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+numpy==2.2.6
+transformers==4.57.3
+tokenizers==0.22.2
+diffusers==0.36.0
+accelerate==1.12.0
+safetensors==0.7.0
+einops==0.8.2
+librosa==0.11.0
+soundfile==0.13.1
+scipy==1.15.3
+pillow==11.3.0
+omegaconf==2.3.0
+tqdm==4.67.3
+av==16.1.0
+opencv-python-headless==4.13.0.92
+# avatarengine stubs are old-style gencode with no runtime version gate (unlike
+# the asr ones), so the flashhead env's older grpc/protobuf pair is fine here.
+grpcio==1.48.2
+protobuf==3.20.3

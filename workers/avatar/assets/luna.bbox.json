@@ -1,0 +1,22 @@
+{
+  "x1": 128,
+  "y1": 213,
+  "x2": 599,
+  "y2": 684,
+  "img_w": 720,
+  "img_h": 1280,
+  "face_ratio": 2.0,
+  "size": 512,
+  "cond": "luna.cond.png",
+  "engine_box": [
+    176,
+    279,
+    553,
+    656
+  ],
+  "face_crop": false,
+  "recrop": {
+    "scale": 1.25,
+    "up": 0.7
+  }
+}

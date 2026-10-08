@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Mynah SDK 示例 · 假 BI 大屏</title>
+<!--
+  SDK 最小示例，同时是 P1/P2 的验收页：一块假大屏 + 一个数字人，
+  数字人能按提问切页、并把查到的数字念出来。
+
+  怎么跑：
+    node web/sdk/build.mjs                     # 产物落在 web/user/sdk/
+    在浏览器打开 https://<cored>/sdk-example.html?slug=bi
+    （频道的 brain 必须是 local —— qwen realtime 模式不支持工具调用）
+  跨域验收：
+    把本文件拷到任意目录，python3 -m http.server 5555，
+    打开 http://localhost:5555/sdk-example.html?endpoint=https://<cored>&slug=bi；
+    若频道配了 domains，白名单里写 localhost（域名不含端口，originAllowed 取的是 Hostname）。
+-->
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 system-ui, sans-serif;
+         background: #0b1020; color: #dbeafe; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: 14px 24px; font-size: 20px; letter-spacing: 2px; border-bottom: 1px solid #1e293b; }
+  header small { float: right; font-size: 13px; color: #64748b; letter-spacing: 0; }
+  main { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 24px; }
+  .card { background: #111a33; border: 1px solid #1e293b; border-radius: 10px; padding: 16px; }
+  .card h4 { margin: 0 0 8px; font-weight: 500; color: #7dd3fc; font-size: 13px; }
+  .card .n { font-size: 30px; font-weight: 600; }
+  .card.hot { border-color: #22d3ee; box-shadow: 0 0 0 1px #22d3ee55, 0 0 24px #22d3ee33; }
+  .wide { grid-column: span 4; min-height: 200px; }
+  footer { padding: 10px 24px; border-top: 1px solid #1e293b; color: #64748b; font: 12px/1.5 ui-monospace, monospace; }
+  #avatar { position: fixed; right: 24px; bottom: 24px; width: 300px; height: 400px; z-index: 10; }
+  #cap { position: fixed; right: 24px; bottom: 8px; width: 300px; text-align: center;
+         font-size: 13px; color: #fff; text-shadow: 0 1px 4px #000; z-index: 11; }
+  #ask { position: fixed; left: 24px; bottom: 24px; z-index: 11; }
+  input { font: inherit; padding: 8px 12px; width: 320px; border-radius: 6px;
+          border: 1px solid #334155; background: #0f172a; color: inherit; }
+</style>
+</head>
+<body>
+<header>
+  <span id="title">经营总览</span>
+  <small id="scope">全国 · 本月</small>
+</header>
+
+<main id="grid"></main>
+
+<footer id="trace">等待连接…</footer>
+
+<div id="avatar"></div>
+<div id="cap"></div>
+<div id="ask"><input id="q" placeholder="打开华东区的销售页，销售额多少？" autocomplete="off"></div>
+
+<script>
+// SDK 从 cored 上取：跨域打开这一份文件时（?endpoint=…），本地目录里并没有
+// sdk/ 这个子目录，所以脚本地址必须跟着 endpoint 走。
+const qs = new URLSearchParams(location.search);
+const ENDPOINT = qs.get("endpoint") || "";
+document.write(`<script src="${ENDPOINT}/sdk/mynah.min.js"><\/script>`);
+</script>
+<script>
+// ---- 假大屏：全部 mock，带 100~300ms 假延迟 ---------------------------------
+const PAGES = {
+  overview: { title: "经营总览", cards: ["销售额", "订单量", "毛利率", "客单价"] },
+  sales:    { title: "销售分析", cards: ["销售额", "同比", "环比", "TOP 渠道"] },
+  supply:   { title: "供应链",   cards: ["库存周转", "缺货率", "在途", "履约时效"] },
+  finance:  { title: "财务",     cards: ["收入", "成本", "净利", "现金流"] },
+};
+const state = { page: "overview", region: "全国", hot: null };
+
+function render() {
+  const p = PAGES[state.page] || PAGES.overview;
+  document.getElementById("title").textContent = p.title;
+  document.getElementById("scope").textContent = state.region + " · 本月";
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
+  for (const name of p.cards) {
+    const d = document.createElement("div");
+    d.className = "card" + (state.hot === name ? " hot" : "");
+    d.innerHTML = `<h4>${name}</h4><div class="n">${fakeValue(name)}</div>`;
+    grid.appendChild(d);
+  }
+  const wide = document.createElement("div");
+  wide.className = "card wide";
+  wide.innerHTML = `<h4>趋势（mock）</h4><div style="opacity:.5">${"▁▂▄▆█▆▄▃▅▇█▆▄▂▁".repeat(4)}</div>`;
+  grid.appendChild(wide);
+  // 状态同步到 URL：刷新可复现，录屏时也看得见「数字人真的改了地址」。
+  history.replaceState(null, "", `?page=${state.page}&region=${encodeURIComponent(state.region)}`);
+}
+
+// 用名字派生一个稳定的假数字，免得每次 render 都在跳。
+function fakeValue(name) {
+  let h = 0;
+  for (const c of name + state.page + state.region) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  if (name.includes("率") || name.includes("比")) return ((h % 400) / 10 - 10).toFixed(1) + "%";
+  return (1000 + (h % 9000)).toLocaleString();
+}
+
+const mockDelay = () => new Promise((r) => setTimeout(r, 100 + Math.random() * 200));
+function trace(s) { document.getElementById("trace").textContent = s; }
+
+// ---- 数字人 ------------------------------------------------------------------
+// endpoint / slug / token 都可以从 URL 传，方便一份文件跑三种场景：
+//   同源默认频道        /sdk-example.html
+//   指定频道            /sdk-example.html?slug=bi
+//   跨域（另一个源打开） ?endpoint=https://do.au56.com:8443&slug=bi
+// ⚠️ 工具调用只在 brain=local 的频道上存在，qwen realtime 模式不支持。
+const pl = new Mynah({
+  endpoint: ENDPOINT,
+  slug: qs.get("slug") || "",
+  token: qs.get("token") || "",
+  mic: qs.get("mic") !== "0",
+});
+
+// 能力一：动作类。cored 不等回执 —— 大屏切页与「好的，华东区销售」同时发生。
+pl.ability({
+  name: "goto_page",
+  description: "打开大屏上的指定页面。可同时指定区域来筛选数据。",
+  parameters: {
+    type: "object",
+    properties: {
+      page: { type: "string", enum: Object.keys(PAGES), description: "要打开的页面" },
+      region: { type: "string", description: "区域，如 华东、华南、全国" },
+    },
+    required: ["page"],
+  },
+  run: (a) => {
+    state.page = a.page;
+    if (a.region) state.region = a.region;
+    state.hot = null;
+    render();
+    trace(`goto_page → ${a.page} / ${state.region}`);
+  },
+});
+
+// 能力二：查询类。结果要进答案，所以 blocking —— cored 会先说 filler 垫场。
+pl.ability({
+  name: "query_metric",
+  description: "查询当前页面上某个指标的数值。需要报出具体数字时调用。",
+  blocking: true,
+  filler: "我查一下。",
+  parameters: {
+    type: "object",
+    properties: {
+      metric: { type: "string", description: "指标名，如 销售额、同比、库存周转" },
+      region: { type: "string" },
+    },
+    required: ["metric"],
+  },
+  run: async (a) => {
+    await mockDelay();
+    if (a.region) state.region = a.region;
+    state.hot = a.metric;      // 高亮对应卡片：说到哪，大屏亮到哪
+    render();
+    trace(`query_metric → ${a.metric}`);
+    return { metric: a.metric, region: state.region, value: fakeValue(a.metric), period: "本月" };
+  },
+});
+
+pl.on("subtitle", (e) => {
+  const cap = document.getElementById("cap");
+  if (e.start) cap.textContent = "";
+  else cap.textContent = (cap.textContent + " " + e.text).slice(-60);
+});
+pl.on("user", (e) => trace("听到：" + e.text));
+pl.on("tool", (e) => console.log("[tool]", e.name, e.arguments));
+pl.on("error", (e) => trace("错误：" + (e.title || e.kind) + " " + (e.message || "")));
+pl.on("connected", (e) => trace(e.mic ? "已连接（麦克风已开，直接说话）" : "已连接（无麦，用下方输入框）"));
+
+pl.mount("#avatar");
+render();
+pl.connect().catch((e) => trace("连接失败：" + e.message));
+
+document.getElementById("q").addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" || !ev.target.value.trim()) return;
+  pl.ask(ev.target.value.trim());
+  ev.target.value = "";
+});
+</script>
+</body>
+</html>

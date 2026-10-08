@@ -1,0 +1,14 @@
+# Mynah avatar worker (flashhead-class env) — pinned to match the host
+# conda env that runs wav2lipLS. torch's cu121 wheel bundles the CUDA runtime,
+# so the image needs only the NVIDIA driver (injected via CDI), not a CUDA base.
+# Serves wav2lipLS (HuBERT audio features — no librosa needed).
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+numpy==2.2.6
+transformers==4.57.3
+safetensors==0.7.0
+einops==0.8.2
+av==16.1.0
+opencv-python-headless==4.10.0.84
+grpcio==1.48.2
+protobuf==3.20.3

@@ -1,0 +1,16 @@
+# LivePortrait delta deps over mynah/flashhead:dev — the only packages the
+# avatar-training worker's /extract + /bake stages need that the FlashHead image
+# does not already carry. Pins copied from the host `liveportrait` conda env so
+# the in-container python reproduces the same motion-transfer runtime.
+#
+# (torch / diffusers / numpy / opencv / scikit-image / imageio / huggingface_hub
+#  are inherited from the base image at matching versions — not repeated here.)
+tyro==1.0.13
+insightface==1.0.1
+face-alignment==1.4.1
+albumentations==2.0.8
+pykalman==0.11.2
+lmdb==2.2.1
+ffmpeg-python==0.2.0
+rich==14.3.3
+imageio-ffmpeg==0.6.0

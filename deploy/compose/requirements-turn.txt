@@ -1,0 +1,7 @@
+# Mynah turn-detector worker (Smart Turn v3.2) — CPU/ONNX only. No torch:
+# transformers is used only for the Whisper log-mel feature extractor.
+onnxruntime==1.26.0
+transformers==5.8.1
+numpy==2.3.5
+grpcio==1.81.0
+protobuf==6.33.6
