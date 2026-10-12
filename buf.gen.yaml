@@ -1,0 +1,12 @@
+version: v1
+managed:
+  enabled: true
+  go_package_prefix:
+    default: mynah/gen/go
+plugins:
+  - name: go
+    out: gen/go
+    opt: paths=source_relative
+  - name: go-grpc
+    out: gen/go
+    opt: paths=source_relative

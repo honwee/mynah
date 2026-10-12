@@ -1,0 +1,20 @@
+{
+  "name": "@mynah/sdk",
+  "version": "0.1.0",
+  "description": "Mynah 浏览器 SDK：把数字人当通用组件挂进任意宿主页面",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "../user/sdk/mynah.js",
+  "module": "src/index.js",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.5"
+  }
+}

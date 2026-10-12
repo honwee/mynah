@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="ink">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mynah · 安装向导</title>
+<link rel="stylesheet" href="/static/theme.css">
+<style>
+  body { background:var(--bg); }
+  .stage { min-height:100vh; display:flex; flex-direction:column; align-items:center; padding:56px 20px 96px;
+    background-image:radial-gradient(var(--border) 1px, transparent 1px); background-size:26px 26px; }
+  .wrap { width:100%; max-width:640px; }
+  .hero { text-align:center; margin-bottom:26px; }
+  .hero .mark { width:54px; height:54px; border-radius:15px; background:#171715; color:#fff;
+    display:inline-flex; align-items:center; justify-content:center; box-shadow:0 8px 22px rgba(20,20,18,.18); margin-bottom:16px; }
+  .hero h1 { font-size:25px; font-weight:660; letter-spacing:.01em; }
+  .hero p { color:var(--text-3); font-size:14px; margin-top:8px; }
+
+  /* resources strip */
+  .res { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+  .res-chip { flex:1; min-width:130px; background:var(--surface); border:1px solid var(--border); border-radius:11px; padding:10px 12px; }
+  .res-chip .rc-top { display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--text-3); }
+  .res-chip .rc-main { font-size:13px; font-weight:600; margin-top:3px; }
+  .res-chip .rc-bar { height:4px; border-radius:99px; background:var(--surface-2); margin-top:7px; overflow:hidden; }
+  .res-chip .rc-fill { height:100%; background:var(--accent); border-radius:99px; }
+  .res-empty { font-size:12.5px; color:var(--text-3); padding:10px 12px; border:1px dashed var(--border-strong); border-radius:11px; width:100%; text-align:center; }
+
+  .prog { display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:0 2px; }
+  .prog-bar { flex:1; height:6px; border-radius:99px; background:var(--surface-2); overflow:hidden; }
+  .prog-fill { height:100%; width:0; background:#171715; border-radius:99px; transition:width .5s cubic-bezier(.4,0,.2,1); }
+  .prog-num { font-size:12.5px; color:var(--text-2); font-variant-numeric:tabular-nums; white-space:nowrap; font-weight:550; }
+
+  .list { background:var(--surface); border:1px solid var(--border); border-radius:16px;
+    box-shadow:0 1px 2px rgba(20,20,18,.04), 0 12px 32px rgba(20,20,18,.05); overflow:hidden; }
+  .item { padding:18px 20px; }
+  .item + .item { border-top:1px solid var(--border); }
+  .item-row { display:flex; align-items:center; gap:14px; }
+  .circ { width:26px; height:26px; flex:none; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; }
+  .circ.down { border:2px solid var(--border-strong); }
+  .circ.ok { background:var(--ok); color:#fff; } .circ.ok svg { width:15px; height:15px; }
+  .circ.provisioning { border:2px solid var(--border-strong); border-top-color:#171715; animation:spin .7s linear infinite; }
+  .tile { width:38px; height:38px; flex:none; border-radius:10px; background:var(--surface-2);
+    display:inline-flex; align-items:center; justify-content:center; color:var(--text-2); }
+  .tile svg { width:19px; height:19px; }
+  .meta { min-width:0; flex:1; } .meta .nm { font-weight:600; font-size:14.5px; } .meta .hint { font-size:12px; color:var(--text-3); margin-top:2px; }
+  .ready-tag { font-size:12.5px; color:var(--ok); font-weight:600; }
+
+  /* per-component config drawer */
+  .cfg { margin:14px 0 0 40px; }
+  .cfg .seg { margin-bottom:12px; }
+  .cfg-pane { display:none; }
+  .cfg-pane.on { display:block; }
+  .row2 { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .row2 .input, .row2 .select { height:34px; font-size:13px; }
+  .grow1 { flex:1; min-width:160px; }
+  .pre-badge { font-size:12px; font-weight:550; display:inline-flex; align-items:center; gap:5px; }
+  .pre-ok { color:var(--ok); } .pre-warn { color:var(--warn); }
+  .cfg-msg { font-size:12px; margin-top:7px; }
+  .log { display:none; margin-top:12px; max-height:190px; overflow:auto; white-space:pre-wrap;
+    background:var(--surface-2); border-radius:9px; padding:11px 13px;
+    font-family:ui-monospace,Menlo,monospace; font-size:11.5px; color:var(--text-2); line-height:1.7; }
+
+  .cta { margin-top:22px; } .cta .btn { width:100%; height:46px; font-size:14.5px; border-radius:11px; gap:8px; }
+  .cta-hint { text-align:center; font-size:12.5px; color:var(--text-3); margin-top:10px; }
+  .foot { text-align:center; font-size:11.5px; color:var(--text-3); margin-top:26px; }
+</style>
+</head>
+<body>
+<div class="stage"><div class="wrap">
+  <div class="hero">
+    <span class="mark"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 7v10l8 5 8-5V7z"/><path d="M12 22V12"/><path d="m4 7 8 5 8-5"/></svg></span>
+    <h1>欢迎使用 Mynah</h1>
+    <p>选择「连接已有 API」或「本地安装」，几分钟启动你的实时数字人。</p>
+  </div>
+
+  <div class="res" id="res"></div>
+  <div class="prog"><div class="prog-bar"><div class="prog-fill" id="progFill"></div></div><span class="prog-num" id="progNum">0 / 0 就绪</span></div>
+  <div class="list" id="cards"></div>
+
+  <div class="cta">
+    <button id="launch" class="btn btn-primary" disabled>启动数字人
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
+    <div class="cta-hint" id="launchHint">完成上面所有步骤后即可启动</div>
+  </div>
+  <div class="foot">本地优先 · 模型自动下载（走国内镜像）· 数据不出本机</div>
+</div></div>
+<script>
+const DEMO = new URLSearchParams(location.search).has('demo');
+const CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const ICONS={ llm:'<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z"/>',
+  avatar:'<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  tts:'<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a10 10 0 0 1 0 14"/>' };
+const ic=k=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">'+(ICONS[k]||ICONS.llm)+'</svg>';
+
+let RES = { gpus:[], disk_free_gb:null };
+const els = {};
+const DEMO_RES = { gpus:[{index:0,name:"RTX 4090",mem_total_gb:24,mem_free_gb:21.5,util:3},{index:1,name:"RTX 4090",mem_total_gb:24,mem_free_gb:6.2,util:64}], disk_free_gb:512 };
+const DEMO_COMPS=[
+  {key:'llm',label:'对话大脑 (LLM · ollama)',hint:'ollama + qwen2.5:7b，OpenAI 兼容',kind:'openai',vram_gb:6,disk_gb:5,status:'down',mode:'local'},
+  {key:'avatar',label:'数字人形象 (FlashHead)',hint:'默认 FlashHead（高画质，自带内置形象）',kind:'grpc',vram_gb:10,disk_gb:12,status:'ok',mode:'local'},
+  {key:'tts',label:'语音合成 (TTS · Qwen3-TTS)',hint:'Qwen3-TTS（vllm-omni），OpenAI 兼容',kind:'openai',vram_gb:3,disk_gb:3,status:'provisioning',mode:'local'} ];
+const DEMO_ST={llm:{status:'down'},avatar:{status:'ok'},tts:{status:'provisioning'}};
+const DEMO_LOG={ llm:['$ bash ollama.sh  (GPU=0)','[llm] 拉取 qwen2.5:7b-instruct-q4_K_M ...','  pulling manifest','  pulling 2bada8a74506   34.2%','  pulling 2bada8a74506  100.0%','  success','[llm] READY'],
+  tts:['$ bash tts.sh  (GPU=0)','[tts] 下载 Qwen3-TTS (HF_ENDPOINT=https://hf-mirror.com) ...','  model.safetensors:  61%','  model.safetensors: 100%','[tts] 启动 vLLM(omni) ...','[tts] READY'] };
+
+function bestGpu(){ if(!RES.gpus.length) return null; return RES.gpus.reduce((a,b)=>b.mem_free_gb>a.mem_free_gb?b:a).index; }
+
+function renderRes(){
+  const box=document.getElementById('res'); box.innerHTML='';
+  if(!RES.gpus.length){ box.innerHTML='<div class="res-empty">未检测到 GPU — 可用「连接已有 API」指向远程/云端，或在有卡的机器上本地安装</div>'; return; }
+  RES.gpus.forEach(g=>{
+    const used=g.mem_total_gb-g.mem_free_gb, pct=Math.round(used/g.mem_total_gb*100);
+    const d=document.createElement('div'); d.className='res-chip';
+    d.innerHTML=`<div class="rc-top">GPU ${g.index} · ${g.name} · ${g.util}%</div>
+      <div class="rc-main">${g.mem_free_gb}G 空闲 <span class="muted small">/ ${g.mem_total_gb}G</span></div>
+      <div class="rc-bar"><div class="rc-fill" style="width:${pct}%"></div></div>`;
+    box.appendChild(d);
+  });
+  if(RES.disk_free_gb!=null){ const d=document.createElement('div'); d.className='res-chip';
+    d.innerHTML=`<div class="rc-top">磁盘</div><div class="rc-main">${RES.disk_free_gb}G 空闲</div>`; box.appendChild(d); }
+}
+
+function gpuOptions(sel){ return RES.gpus.map(g=>`<option value="${g.index}" ${g.index===sel?'selected':''}>GPU ${g.index} · ${g.name} · ${g.mem_free_gb}G 空闲</option>`).join(''); }
+function preflight(c, gpuIdx){
+  const g=RES.gpus.find(x=>x.index===gpuIdx);
+  if(!g) return '<span class="pre-badge pre-warn">⚠ 无可用 GPU</span>';
+  if(g.mem_free_gb>=c.vram_gb) return `<span class="pre-badge pre-ok">✓ 显存充足（需~${c.vram_gb}G，空闲 ${g.mem_free_gb}G）</span>`;
+  return `<span class="pre-badge pre-warn">⚠ 显存可能不足（需~${c.vram_gb}G，空闲 ${g.mem_free_gb}G）</span>`;
+}
+
+function makeCard(c){
+  const item=document.createElement('div'); item.className='item';
+  const openai = c.kind!=='grpc';
+  item.innerHTML=`
+    <div class="item-row">
+      <span class="circ down c-circ"></span><span class="tile">${ic(c.key)}</span>
+      <div class="meta"><div class="nm"></div><div class="hint"></div></div>
+      <div class="c-right"></div>
+    </div>
+    <div class="cfg c-cfg">
+      <div class="seg c-seg">
+        <button class="seg-item active" data-m="local">本地安装</button>
+        <button class="seg-item" data-m="remote">连接已有</button>
+      </div>
+      <div class="cfg-pane c-local on">
+        <div class="row2">
+          <select class="select c-gpu" style="max-width:240px"></select>
+          <span class="c-pre"></span>
+          <button class="btn btn-primary btn-sm c-install" style="margin-left:auto">一键安装</button>
+        </div>
+      </div>
+      <div class="cfg-pane c-remote">
+        <div class="row2">
+          ${openai?`<input class="input grow1 c-url" placeholder="https://… (OpenAI 兼容 base_url)">
+                    <input class="input c-model" style="max-width:170px" placeholder="model（可选）">`
+                  :`<input class="input grow1 c-url" placeholder="host:port（已有 avatar worker）">`}
+          <button class="btn btn-secondary btn-sm c-test">测试并连接</button>
+        </div>
+        <div class="cfg-msg muted c-msg"></div>
+      </div>
+      <pre class="log c-log"></pre>
+    </div>`;
+  document.getElementById('cards').appendChild(item);
+  const el={ item, circ:item.querySelector('.c-circ'), right:item.querySelector('.c-right'),
+    cfg:item.querySelector('.c-cfg'), seg:item.querySelectorAll('.seg-item'),
+    paneLocal:item.querySelector('.c-local'), paneRemote:item.querySelector('.c-remote'),
+    gpu:item.querySelector('.c-gpu'), pre:item.querySelector('.c-pre'),
+    install:item.querySelector('.c-install'), url:item.querySelector('.c-url'),
+    model:item.querySelector('.c-model'), test:item.querySelector('.c-test'),
+    msg:item.querySelector('.c-msg'), log:item.querySelector('.c-log'), mode:'local' };
+  item.querySelector('.nm').textContent=c.label; item.querySelector('.hint').textContent=c.hint;
+  el.seg.forEach(b=>b.onclick=()=>{ el.mode=b.dataset.m; el.seg.forEach(x=>x.classList.toggle('active',x===b));
+    el.paneLocal.classList.toggle('on',el.mode==='local'); el.paneRemote.classList.toggle('on',el.mode==='remote'); });
+  el.install.onclick=()=>provision(c.key, parseInt(el.gpu.value));
+  el.test.onclick=()=>connect(c.key);
+  els[c.key]=el; return el;
+}
+
+function syncGpu(c){
+  const el=els[c.key]; const sel = el.gpu.value!==''?parseInt(el.gpu.value):bestGpu();
+  el.gpu.innerHTML=gpuOptions(sel);
+  if(!RES.gpus.length){ el.gpu.disabled=true; el.install.disabled=true; }
+  el.pre.innerHTML = RES.gpus.length? preflight(c, parseInt(el.gpu.value)) : '<span class="pre-badge pre-warn">⚠ 无 GPU，请用「连接已有」</span>';
+  el.gpu.onchange=()=>{ el.pre.innerHTML=preflight(c, parseInt(el.gpu.value)); };
+}
+
+function render(list){
+  let ok=0;
+  list.forEach(c=>{
+    const el = els[c.key]||makeCard(c);
+    el.circ.className='circ c-circ '+c.status; el.circ.innerHTML=c.status==='ok'?CHECK:'';
+    syncGpu(c);
+    if(c.status==='ok'){ ok++; el.right.innerHTML='<span class="ready-tag">已就绪</span>'; el.cfg.style.display='none'; }
+    else if(c.status==='provisioning'){ el.right.innerHTML='<span class="muted small">安装中…</span>'; el.cfg.style.display='block'; }
+    else { el.right.innerHTML=''; el.cfg.style.display='block'; }
+  });
+  const total=list.length, pct=total?Math.round(ok/total*100):0;
+  document.getElementById('progFill').style.width=pct+'%';
+  document.getElementById('progNum').textContent=ok+' / '+total+' 就绪';
+  const all=total&&ok===total;
+  document.getElementById('launch').disabled=!all;
+  document.getElementById('launchHint').textContent=all?'一切就绪 — 点击启动你的数字人':'完成上面所有步骤后即可启动';
+}
+
+async function loadRes(){ if(DEMO){RES=DEMO_RES;renderRes();return;} try{RES=await (await fetch('/api/resources')).json();}catch(e){} renderRes(); }
+async function poll(){ if(DEMO){render(DEMO_COMPS.map(c=>({...c,...DEMO_ST[c.key]})));return;} try{const d=await(await fetch('/api/status')).json();render(d.components);}catch(e){} }
+
+function connect(key){
+  const el=els[key]; el.msg.textContent='连接中…'; el.msg.className='cfg-msg muted';
+  if(DEMO){ setTimeout(()=>{el.msg.textContent='✓ 已连接';el.msg.className='cfg-msg pre-ok';DEMO_ST[key].status='ok';poll();},700); return; }
+  const body = el.url.placeholder.startsWith('host')?{addr:el.url.value}:{base_url:el.url.value, model:el.model?el.model.value:''};
+  fetch('/api/connect/'+key,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(async r=>{const d=await r.json(); if(r.ok){el.msg.textContent='✓ 已连接';el.msg.className='cfg-msg pre-ok';poll();}
+      else{el.msg.textContent='✗ '+(d.error||'连接失败');el.msg.className='cfg-msg pre-warn';}});
+}
+function provision(key,gpu){
+  const el=els[key]; el.log.style.display='block'; el.log.textContent='';
+  if(DEMO){DEMO_ST[key].status='provisioning';poll();demoStream(key);return;}
+  fetch('/api/provision/'+key,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gpu})})
+    .then(r=>{if(r.status===409)el.log.textContent+='已在安装中…\n';stream(key);poll();});
+}
+function demoStream(key){ const el=els[key]; const L=DEMO_LOG[key]||['$ …','done']; let i=0; el.log.style.display='block';
+  const t=setInterval(()=>{ if(i<L.length){el.log.textContent+=L[i++]+'\n';el.log.scrollTop=el.log.scrollHeight;}
+    else{clearInterval(t);el.log.textContent+='\n✓ 完成\n';DEMO_ST[key].status='ok';poll();} },550); }
+function stream(key){ const el=els[key]; const es=new EventSource('/api/provision/'+key+'/stream');
+  es.onmessage=ev=>{try{el.log.textContent+=JSON.parse(ev.data).line+'\n';el.log.scrollTop=el.log.scrollHeight;}catch(e){}};
+  es.addEventListener('done',ev=>{let c=0;try{c=JSON.parse(ev.data).code;}catch(e){} el.log.textContent+=(c===0?'\n✓ 完成\n':'\n✗ 失败 (exit '+c+')\n');es.close();poll();});
+  es.onerror=()=>{es.close();poll();}; }
+document.getElementById('launch').onclick=()=>{ document.getElementById('launchHint').textContent='启动中…';
+  if(DEMO){setTimeout(()=>{document.getElementById('launchHint').innerHTML='已启动 — 打开数字人页面（演示）';},700);return;}
+  fetch('/api/launch',{method:'POST'}).then(()=>{document.getElementById('launchHint').innerHTML='已启动 — 打开 <a href="https://localhost:8455/">数字人页面</a>';}); };
+
+loadRes(); poll();
+if(DEMO){ setTimeout(()=>demoStream('tts'),900); } else setInterval(poll,4000);
+</script>
+</body>
+</html>

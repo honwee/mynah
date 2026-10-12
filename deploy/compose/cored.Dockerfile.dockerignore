@@ -1,0 +1,11 @@
+# Keep secrets and runtime-only assets out of the cored build context/layers.
+# (web/assets/tls are bind-mounted at runtime, never needed to build the binary.)
+.git
+**/__pycache__
+*.log
+bin
+tls
+assets
+web
+deploy
+research

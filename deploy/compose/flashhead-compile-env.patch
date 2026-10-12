@@ -1,0 +1,26 @@
+# Mynah — make FlashHead's torch.compile gates env-configurable.
+#
+# Upstream SoulX-FlashHead hardcodes COMPILE_MODEL = COMPILE_VAE = True. The cold
+# start is ~139s = 15s model load + ~124s torch.compile (Dynamo trace + inductor
+# codegen + autotune; the inductor *kernel* cache does NOT cover trace/guards, so
+# even a cache hit stays ~124s). This patch lets the two compile gates be turned
+# off via env so an operator can trade steady-state throughput for a near-instant
+# (~15s) cold start. Default "1" = unchanged behavior.
+#
+# The repo is bind-mounted (not vendored into our tree), so this patch is carried
+# here for reproducibility. Apply against the SoulX-FlashHead checkout:
+#   cd <SoulX-FlashHead> && patch -p1 < flashhead-compile-env.patch
+# Then set FLASHHEAD_COMPILE_MODEL / FLASHHEAD_COMPILE_VAE in the flashhead
+# compose service (both default "1").
+--- a/flash_head/src/pipeline/flash_head_pipeline.py
++++ b/flash_head/src/pipeline/flash_head_pipeline.py
+@@ -16,8 +16,8 @@ from flash_head.utils.facecrop import process_image
+ from flash_head.utils.facecrop import process_image
+
+ # compile models to speedup inference
+-COMPILE_MODEL = True
+-COMPILE_VAE = True
++COMPILE_MODEL = os.environ.get("FLASHHEAD_COMPILE_MODEL", "1") == "1"
++COMPILE_VAE = os.environ.get("FLASHHEAD_COMPILE_VAE", "1") == "1"
+ # use parallel vae to speedup decode/encode, only support WanVAE
+ USE_PARALLEL_VAE = True

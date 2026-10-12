@@ -1,0 +1,18 @@
+# One conda env ("mynah", Python 3.10) for every worker on the cloud images:
+# FlashHead avatar + SenseVoice ASR + Smart Turn + EdgeTTS. The compose
+# deployment keeps them in separate images; here they share one interpreter
+# because the image has to fit a 30 GB system disk (AutoDL), and torch is the
+# bulk of each env. Pins come from requirements-flashhead.txt; the extras below
+# are known to coexist with that torch/protobuf/grpcio set. bootstrap.sh
+# concatenates this file after requirements-flashhead.txt with the PyTorch index
+# swapped for TORCH_INDEX_URL (a China mirror; download.pytorch.org crawls there).
+# ASR (SenseVoice + fsmn-vad)
+funasr==1.2.6
+modelscope==1.26.0
+# Smart Turn v3.2 (ONNX, CPU); WhisperFeatureExtractor comes from transformers
+onnxruntime>=1.19,<2   # 1.26 (the compose pin) has no py3.10 wheel
+# EdgeTTS tier
+edge-tts>=7.0,<8
+aiohttp>=3.9
+# model downloads
+huggingface_hub>=0.25

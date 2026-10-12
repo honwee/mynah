@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+// PersonaLive streaming ASR contract — same Session(stream)->stream shape as
+// avatarengine. The client (cored) forwards browser-mic Opus packets verbatim;
+// the worker decodes, runs streaming VAD to segment utterances, and emits
+// VadEvent (for barge-in) + final Transcript per utterance.
+package personalive.asr.v1;
+
+service AsrEngine {
+  rpc Session(stream ClientFrame) returns (stream ServerFrame);
+  rpc Health(HealthRequest) returns (HealthReply);
+}
+
+// ---- client -> server -------------------------------------------------------
+
+message SessionSpec {
+  string session_id = 1;
+  string codec      = 2;  // "opus" (48k RTP payloads, default) or "pcm_f32le_16k"
+  string language   = 3;  // SenseVoice language hint, "" = auto
+  bool   want_utterance_audio = 4;  // also emit UtteranceAudio per segment (for audio turn-detection)
+  bool   want_pcm             = 5;  // PASSTHROUGH: only decode and stream PcmChunk; no VAD, no transcription (cloud-VAD mode owns segmentation)
+}
+
+message AudioPacket {
+  bytes  data = 1;  // one Opus packet (or PCM chunk per codec)
+  uint64 seq  = 2;
+}
+
+message Close {}
+
+message ClientFrame {
+  oneof msg {
+    SessionSpec start = 1;
+    AudioPacket audio = 2;
+    Close       close = 3;
+  }
+}
+
+// ---- server -> client -------------------------------------------------------
+
+message Ready {}
+
+// VAD edge: speech=true the instant the user starts talking (cored uses this
+// to barge-in / interrupt the avatar), speech=false when the utterance ends.
+message VadEvent {
+  bool   speech    = 1;
+  uint64 utterance = 2;
+}
+
+message Transcript {
+  string text      = 1;
+  bool   final     = 2;  // P3.5 worker only emits finals (offline decode per utterance)
+  uint64 utterance = 3;
+}
+
+// UtteranceAudio carries the just-segmented utterance's waveform (16 kHz mono
+// float32 LE PCM, last <=8 s), emitted at VAD segment close — BEFORE the (more
+// expensive) transcription of that same utterance. cored relays it to the turn
+// detector for audio-based end-of-turn, so the turn judgment overlaps this
+// worker's own decode instead of waiting on the transcript. Only sent when the
+// session asked for it (SessionSpec.want_utterance_audio).
+message UtteranceAudio {
+  bytes  pcm       = 1;
+  uint64 utterance = 2;
+}
+
+message EngineError { string message = 1; }
+
+// PcmChunk is the decoded mic stream (16 kHz mono float32 LE PCM), one chunk
+// per fed Opus packet — the cloud-VAD passthrough. When SessionSpec.want_pcm
+// is set the worker acts as a pure decoder: it emits only PcmChunk (no
+// VadEvent/Transcript), and cored forwards the continuous waveform to the
+// server-side VAD (Qwen realtime server_vad / smart_turn), which owns
+// segmentation, transcription and turn-taking.
+message PcmChunk {
+  bytes  pcm = 1;
+  uint64 seq = 2;
+}
+
+message ServerFrame {
+  oneof msg {
+    Ready          ready           = 1;
+    VadEvent       vad             = 2;
+    Transcript     transcript      = 3;
+    EngineError    error           = 4;
+    UtteranceAudio utterance_audio = 5;
+    PcmChunk       pcm             = 6;
+  }
+}
+
+// ---- health -----------------------------------------------------------------
+
+message HealthRequest {}
+message HealthReply {
+  bool   ready  = 1;
+  string detail = 2;
+}

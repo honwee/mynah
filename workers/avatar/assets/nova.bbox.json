@@ -1,0 +1,22 @@
+{
+  "x1": 97,
+  "y1": 109,
+  "x2": 625,
+  "y2": 637,
+  "img_w": 720,
+  "img_h": 1280,
+  "face_ratio": 2.0,
+  "size": 512,
+  "cond": "nova.cond.png",
+  "engine_box": [
+    150,
+    183,
+    572,
+    606
+  ],
+  "face_crop": false,
+  "recrop": {
+    "scale": 1.25,
+    "up": 0.7
+  }
+}

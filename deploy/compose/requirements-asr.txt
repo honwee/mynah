@@ -1,0 +1,31 @@
+# Mynah ASR worker (SenseVoice + fsmn-VAD) — pinned to match the host
+# `livetalking` conda env this worker has always run in. torch's cu121 wheel
+# bundles the CUDA runtime, so the image needs only the NVIDIA driver (injected
+# via CDI), not a CUDA base image.
+#
+# Two pins are NOT free choices — the checked-in gen/python/asr/v1 stubs gate on
+# them at import time and raise if they're older:
+#   grpcio   >= 1.69.0  (asr_pb2_grpc.py: GRPC_GENERATED_VERSION)
+#   protobuf >= 5.29.0  (asr_pb2.py: ValidateProtobufRuntimeVersion)
+# That rules out the avatar worker's grpcio==1.48.2 / protobuf==3.20.3 pins;
+# these mirror the host env's working 1.73.0 / 5.29.5 instead.
+#
+# PyAV carries its own FFmpeg+libopus, so no system ffmpeg is needed to decode
+# the browser's Opus packets. Pinned to 16.1.0 (same as the avatar/flashhead
+# images) rather than the host env's 14.4.0: 14.x publishes no cp310 wheel, so
+# pip falls back to a source build that needs pkg-config + FFmpeg headers. The
+# decode path here is CodecContext + AudioResampler, stable across both.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.3.1+cu121
+torchaudio==2.3.1+cu121
+funasr==1.2.6
+modelscope==1.26.0
+numpy==2.2.6
+av==16.1.0
+librosa==0.11.0
+soundfile==0.13.1
+scipy==1.15.3
+grpcio==1.73.0
+protobuf==5.29.5
+# probe_asr.py / bake_question.py (in-image test clients) post over HTTP.
+requests==2.32.3

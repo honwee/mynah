@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# mynahctl — start/stop the natively installed Mynah stack on a cloud image.
+#   mynahctl start|stop|restart|status|logs [service]|pull-llm|password|prepare-image
+# Reads <prefix>/env (written by bootstrap.sh). Services, in start order:
+#   pg tts asr turn avatar llm cored
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${MYNAH_ENV:-$HERE/env}"
+[ -f "$ENV_FILE" ] || { echo "no env file at $ENV_FILE (run bootstrap.sh first)"; exit 1; }
+set -a; . "$ENV_FILE"; set +a
+LOGS="$PREFIX/logs"; RUN="$PREFIX/run"; mkdir -p "$LOGS" "$RUN"
+# Postgres runs as user "mynah", which cannot write under /root — its log lives next to its data.
+PG_LOG="$(dirname "$PG_DATA")/pg.log"; touch "$PG_LOG" && chown mynah "$PG_LOG" 2>/dev/null
+. "$CONDA_ROOT/etc/profile.d/conda.sh"
+PY="$CONDA_ROOT/envs/mynah/bin/python"
+PRESETS="$PREFIX/presets"; ASSETS="$SRC/workers/avatar/assets"
+SERVICES="pg tts asr turn avatar llm cored"
+[ "${LLM_MODE:-none}" = none ] && SERVICES="pg tts asr turn avatar cored"
+
+port_open(){ (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+wait_port(){ # port name seconds
+  local i; for i in $(seq 1 "$3"); do port_open "$1" && return 0; sleep 1; done
+  echo "  !! $2 did not open :$1 within $3s — see $LOGS/$2.log"; return 1
+}
+pid_of(){ [ -f "$RUN/$1.pid" ] && cat "$RUN/$1.pid"; }
+alive(){ local p; p=$(pid_of "$1"); [ -n "$p" ] && [ -r "/proc/$p/status" ] && ! grep -q "^State:.*Z" "/proc/$p/status"; }  # a zombie is not alive (PID 1 may not reap)
+spawn(){ # name cmd... (runs in its own session so stop can kill the whole tree)
+  local name="$1"; shift
+  if alive "$name"; then echo "  $name already running (pid $(pid_of "$name"))"; return 0; fi
+  setsid nohup "$@" >>"$LOGS/$name.log" 2>&1 < /dev/null &
+  echo $! > "$RUN/$name.pid"
+}
+common_env(){ # exported for every python worker
+  export PERSONALIVE_GEN="$SRC/gen/python" PL_DATA_DIR="$PREFIX/data" CUDA_VISIBLE_DEVICES="$GPU"
+  export XDG_CACHE_HOME="$PREFIX/data/cache" TORCHINDUCTOR_CACHE_DIR="$PREFIX/data/cache/inductor" TRITON_CACHE_DIR="$PREFIX/data/cache/triton" TMPDIR="$PREFIX/data/tmp"
+  export MODELSCOPE_CACHE="$PREFIX/data/modelscope" HF_HUB_OFFLINE=1
+  mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
+}
+pg_ctl(){ su -s /bin/bash mynah -c "$PG_PREFIX/bin/pg_ctl -D $PG_DATA -o '-p $PG_PORT -k /tmp -c listen_addresses=127.0.0.1' $*"; }
+dsn(){ echo "postgres://mynah:$(cat "$PREFIX/.pgpass")@127.0.0.1:$PG_PORT/mynah?sslmode=disable"; }
+
+start_pg(){
+  if port_open "$PG_PORT"; then echo "  pg already listening :$PG_PORT"; return 0; fi
+  pg_ctl -l "$PG_LOG" start >/dev/null
+  wait_port "$PG_PORT" pg 30 || { tail -5 "$PG_LOG"; return 1; }
+  su -s /bin/bash mynah -c "PGPASSWORD=$(cat "$PREFIX/.pgpass") $PG_PREFIX/bin/psql -h 127.0.0.1 -p $PG_PORT -U mynah -d postgres -tAc \"SELECT 1 FROM pg_database WHERE datname='mynah'\"" | grep -q 1 \
+    || su -s /bin/bash mynah -c "PGPASSWORD=$(cat "$PREFIX/.pgpass") $PG_PREFIX/bin/createdb -h 127.0.0.1 -p $PG_PORT -U mynah mynah"
+}
+start_tts(){ common_env; spawn tts env TTS_EDGE_PORT="$TTS_PORT" TTS_EDGE_DEFAULT_VOICE="$VOICE" "$PY" "$SRC/workers/tts-edge/server.py"; wait_port "$TTS_PORT" tts 60; }
+start_asr(){ common_env; spawn asr "$PY" "$SRC/workers/asr/server.py" --port "$ASR_PORT" --http-port "${ASR_HTTP_PORT:-9404}" --device cuda:0; wait_port "$ASR_PORT" asr 240; }
+start_turn(){ common_env; spawn turn "$PY" "$SRC/workers/turn/server.py" --port "$TURN_PORT"; wait_port "$TURN_PORT" turn 120; }
+start_avatar(){
+  common_env
+  export FLASHHEAD_DIR="$FH_DIR" FLASHHEAD_COMPILE_MODEL="${FLASHHEAD_COMPILE:-0}" FLASHHEAD_COMPILE_VAE="${FLASHHEAD_COMPILE:-0}"
+  ( cd "$FH_DIR" && spawn avatar "$PY" "$SRC/workers/avatar/server.py" --port "$AVATAR_PORT" --type lite --avatar "$ASSETS/mynah-f.jpg" )
+  wait_port "$AVATAR_PORT" avatar 600
+}
+llm_env(){ export OLLAMA_HOST="127.0.0.1:$LLM_PORT" OLLAMA_MODELS="$LLM_DIR" OLLAMA_KEEP_ALIVE=-1 CUDA_VISIBLE_DEVICES="$GPU"; }
+start_llm(){
+  llm_env; mkdir -p "$LLM_DIR"
+  spawn llm "$PREFIX/ollama/bin/ollama" serve
+  wait_port "$LLM_PORT" llm 60 || return 1
+  if ! curl -sf "http://127.0.0.1:$LLM_PORT/api/tags" | grep -q "\"$LLM_MODEL\""; then
+    echo "  first start: pulling $LLM_MODEL into $LLM_DIR (one-time, several GB) ..."
+    pull_llm || return 1
+  fi
+  # Load the model now (and keep it resident: OLLAMA_KEEP_ALIVE=-1) so the first
+  # question is not spent waiting on a cold load — cored gives up on a chat
+  # request long before a 7B model finishes loading on a busy GPU.
+  echo "  loading $LLM_MODEL onto the GPU ..."
+  local i; for i in $(seq 1 60); do
+    if curl -sf -m 240 "http://127.0.0.1:$LLM_PORT/api/generate" -d "{\"model\":\"$LLM_MODEL\",\"keep_alive\":-1}" >/dev/null 2>&1; then
+      curl -s "http://127.0.0.1:$LLM_PORT/api/ps" | "$PY" -c 'import sys,json; m=json.load(sys.stdin).get("models",[]); print("  resident:", ", ".join("%s (%.1f GB VRAM)" % (x.get("name"), x.get("size_vram",0)/2**30) for x in m) or "none")'
+      return 0
+    fi
+    sleep 4
+  done
+  echo "  !! $LLM_MODEL did not load — see $LOGS/llm.log"; return 1
+}
+pull_llm(){
+  # Default source is a single-file GGUF on ModelScope (~12 MB/s from China;
+  # registry.ollama.ai throttles to ~200 KB/s after the first few GB) imported
+  # with `ollama create`. LLM_GGUF_URL= (empty) falls back to `ollama pull`.
+  llm_env
+  if [ -n "${LLM_GGUF_URL:-}" ]; then
+    local f="$LLM_DIR/gguf/$(basename "$LLM_GGUF_URL")"
+    mkdir -p "$LLM_DIR/gguf"
+    if [ ! -f "$f" ]; then
+      echo "  downloading $(basename "$f") from ${LLM_GGUF_URL%%/models/*} ..."
+      curl -fL -C - --retry 3 --connect-timeout 20 --speed-limit 51200 --speed-time 60 --progress-bar -o "$f.part" "$LLM_GGUF_URL" 2>&1 | tr '\r' '\n' | awk 'NR%40==0' ; test "${PIPESTATUS[0]}" = 0 && mv "$f.part" "$f" || { echo "  GGUF download failed, falling back to ollama pull"; pull_llm_registry; return; }
+    fi
+    printf 'FROM %s\n' "$f" > "$LLM_DIR/gguf/Modelfile"
+    "$PREFIX/ollama/bin/ollama" create "$LLM_MODEL" -f "$LLM_DIR/gguf/Modelfile" 2>&1 | tr '\r' '\n' | grep -av '^\s*$' | tail -3
+    curl -sf "http://127.0.0.1:$LLM_PORT/api/tags" | grep -q "\"$LLM_MODEL\"" && rm -f "$f" && echo "  $LLM_MODEL imported" && return 0
+    echo "  import failed, falling back to ollama pull"
+  fi
+  pull_llm_registry
+}
+pull_llm_registry(){ # via the API so a log file gets one line per 5% instead of a spinner storm
+  llm_env
+  curl -sN "http://127.0.0.1:$LLM_PORT/api/pull" -d "{\"name\":\"$LLM_MODEL\"}" | "$PY" -c '
+import sys, json
+last = -5
+for line in sys.stdin:
+    try: d = json.loads(line)
+    except Exception: continue
+    if d.get("error"): print("  pull error:", d["error"]); sys.exit(1)
+    s = d.get("status", "")
+    if d.get("total") and d.get("completed") is not None:
+        pct = 100 * d["completed"] / d["total"]
+        if pct - last >= 5 or pct >= 100: last = pct; print(f"  {s} {pct:5.1f}%", flush=True)
+    elif s and not s.startswith("pulling"): print("  " + s, flush=True)
+'
+  curl -sf "http://127.0.0.1:$LLM_PORT/api/tags" | grep -q "\"$LLM_MODEL\""
+}
+ensure_tls(){ # self-signed, minted per instance (prepare-image deletes the image's copy)
+  [ -f "$PREFIX/tls/cored.crt" ] && return 0
+  mkdir -p "$PREFIX/tls"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj "/CN=mynah" \
+    -keyout "$PREFIX/tls/cored.key" -out "$PREFIX/tls/cored.crt" 2>/dev/null
+}
+start_cored(){
+  ensure_tls
+  local idle="luna=$PRESETS/idle_luna__builtin_d9.h264f,nova=$PRESETS/idle_nova__builtin_d9.h264f"
+  local acts="" a m
+  for a in shy:shy laugh:laugh shake:shake_face wink:wink; do
+    for m in luna nova; do acts="${acts:+$acts,}${a%%:*}@$m=$PRESETS/idle_${m}__act_${a%%:*}__builtin_${a##*:}.h264f"; done
+  done
+  local args=(
+    --listen=":$HTTP_PORT" --tls-listen=":$TLS_PORT" --tls-cert="$PREFIX/tls/cored.crt" --tls-key="$PREFIX/tls/cored.key"
+    --worker="127.0.0.1:$AVATAR_PORT" --tts="http://127.0.0.1:$TTS_PORT" --voice="$VOICE"
+    --asr="127.0.0.1:$ASR_PORT" --turn-detector="127.0.0.1:$TURN_PORT"
+    --web="$SRC/web/user" --admin-web="$SRC/web/admin" --admin-listen="127.0.0.1:$ADMIN_HTTP_PORT" --admin-tls-listen=":$ADMIN_PORT"
+    --db="$(dsn)" --docker-socket=
+    --avatar-assets-dir="$ASSETS" --flashhead-dir="$FH_DIR" --flashhead-avatar="$ASSETS/luna.halfbody.png"
+    --idle-ivf="$idle" --idle-silence="$SRC/assets/silence_20ms.opus" --actions="$acts"
+    --stun="${STUN:-}" --ice-tcp=":$ICE_TCP_PORT" --ice-nat-ip="${ICE_NAT_IP:-}" --video-codec=h264
+  )
+  [ "${LLM_MODE:-none}" != none ] && args+=(--llm="http://127.0.0.1:$LLM_PORT" --llm-model="$LLM_MODEL")
+  ( cd "$PREFIX" && spawn cored "$PREFIX/bin/cored" "${args[@]}" )
+  wait_port "$HTTP_PORT" cored 30 || return 1
+  first_boot
+}
+# One-time console defaults for a fresh image: make Luna (the half-body preset
+# with baked idle + gestures) the current avatar instead of the plain 512 face,
+# using the initial admin credentials cored just printed. Idempotent via marker.
+first_boot(){
+  [ -f "$PREFIX/.firstboot-done" ] && return 0
+  local pw tok
+  pw=$(grep -h "initial admin" "$LOGS/cored.log" 2>/dev/null | tail -1 | sed -n 's/.*password=\([^ ]*\).*/\1/p')
+  [ -n "$pw" ] || { echo "  (first-boot defaults skipped: no initial password in $LOGS/cored.log)"; return 0; }
+  for _ in 1 2 3 4 5; do
+    tok=$(curl -sf "http://127.0.0.1:$ADMIN_HTTP_PORT/api/v1/auth/login" -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$pw\"}" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("data",{}).get("token",""))' 2>/dev/null)
+    [ -n "$tok" ] && break; sleep 2
+  done
+  [ -n "$tok" ] || { echo "  (first-boot defaults skipped: console login failed)"; return 0; }
+  if curl -sf -X PUT "http://127.0.0.1:$ADMIN_HTTP_PORT/api/v1/config/avatar" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"current":"luna"}' >/dev/null; then
+    echo "  first boot: current avatar set to Luna (change it in the console → 形象与声音)"
+    touch "$PREFIX/.firstboot-done"
+  else
+    echo "  (first-boot defaults: could not set the avatar; pick Luna in the console)"
+  fi
+}
+
+do_start(){
+  local s; for s in $SERVICES; do echo "starting $s"; "start_$s" || { echo "start failed at $s"; exit 1; }; done
+  echo; echo "Mynah is up."
+  echo "  visitor  https://127.0.0.1:$TLS_PORT/      console  https://127.0.0.1:$ADMIN_PORT/"
+  echo "  (self-signed certificate — click through; through SSH forward $TLS_PORT $ADMIN_PORT $ICE_TCP_PORT)"
+  do_password
+}
+do_stop(){
+  local s p
+  for s in cored llm avatar turn asr tts; do
+    p=$(pid_of "$s"); [ -n "$p" ] || continue
+    kill -- -"$p" 2>/dev/null || kill "$p" 2>/dev/null; rm -f "$RUN/$s.pid"; echo "stopped $s"
+  done
+  port_open "$PG_PORT" && { pg_ctl stop -m fast >/dev/null && echo "stopped pg"; }
+  true
+}
+do_status(){
+  local s port
+  for s in $SERVICES; do
+    case $s in pg) port=$PG_PORT;; tts) port=$TTS_PORT;; asr) port=$ASR_PORT;; turn) port=$TURN_PORT;; avatar) port=$AVATAR_PORT;; llm) port=$LLM_PORT;; cored) port=$HTTP_PORT;; esac
+    if port_open "$port"; then printf '  %-7s up    :%s\n' "$s" "$port"; else printf '  %-7s DOWN  :%s\n' "$s" "$port"; fi
+  done
+  command -v nvidia-smi >/dev/null && nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader | sed 's/^/  gpu     /'
+}
+do_password(){
+  local l; l=$(grep -h "initial admin" "$LOGS/cored.log" 2>/dev/null | tail -1)
+  if [ -n "$l" ]; then echo "  console login: ${l#*— }"; else echo "  console login: admin / (password only printed on the very first start — see $LOGS/cored.log, or reset via the database)"; fi
+}
+# Scrub per-instance state before 保存镜像 / 制作镜像 so every instance made from
+# the image mints its own admin password, DB password and TLS certificate:
+#   - fresh, empty Postgres cluster (cored migrates + creates admin on first start)
+#   - new DB password, no TLS cert (ensure_tls regenerates), no logs/pids/tmp
+#   - first-boot marker cleared (Luna is re-selected on the first start)
+do_prepare_image(){
+  do_stop; sleep 1
+  echo "resetting database cluster at $PG_DATA"
+  rm -rf "$PG_DATA"; mkdir -p "$PG_DATA"; chown mynah:mynah "$PG_DATA"; chmod 700 "$PG_DATA"
+  (umask 077; openssl rand -hex 12 > "$PREFIX/.pgpass")
+  cp "$PREFIX/.pgpass" /tmp/.mynah-pgpw && chown mynah /tmp/.mynah-pgpw
+  su -s /bin/bash mynah -c "$PG_PREFIX/bin/initdb -D $PG_DATA -U mynah --auth=scram-sha-256 --pwfile=/tmp/.mynah-pgpw -E UTF8 >/dev/null" || { echo "initdb failed"; exit 1; }
+  rm -f /tmp/.mynah-pgpw
+  rm -rf "$PREFIX/tls" "$LOGS"/* "$RUN"/* "$PREFIX/data/tmp"/* "$PREFIX/.firstboot-done" "$PG_LOG"
+  rm -f /root/.bash_history "$HOME/.python_history" "$HOME/.wget-hsts"; history -c 2>/dev/null
+  echo "image state scrubbed. Still yours to check before saving:"
+  echo "  - no personal SSH keys left in ~/.ssh (authorized_keys / authorized_keys2 / id_*)"
+  echo "  - nothing of yours in $ENV_FILE"
+  du -sh "$CONDA_ROOT/envs/mynah" "$FH_DIR/models" "$PREFIX/data/modelscope" "$PREFIX/ollama" "$PG_PREFIX" 2>/dev/null
+  df -h / | tail -1
+}
+case "${1:-}" in
+  start) do_start;;
+  stop) do_stop;;
+  restart) do_stop; sleep 1; do_start;;
+  status) do_status;;
+  logs) if [ "${2:-}" = pg ]; then tail -n 50 -F "$PG_LOG"; else tail -n 50 -F "$LOGS/${2:-cored}.log"; fi;;
+  pull-llm) pull_llm;;
+  password) do_password;;
+  prepare-image) do_prepare_image;;
+  *) sed -n 2,6p "$0"; exit 2;;
+esac

@@ -1,0 +1,40 @@
+digraph mynah {
+  graph [rankdir=TB, fontname="Helvetica", fontsize=12, bgcolor="white", nodesep=0.35, ranksep=0.55, pad=0.3];
+  node  [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#4a6fa5", fillcolor="#eaf2fb", penwidth=1.2];
+  edge  [fontname="Helvetica", fontsize=9, color="#6b7a90", arrowsize=0.7];
+
+  subgraph cluster_clients { label="Clients"; style="rounded,dashed"; color="#9fb3c8"; fontcolor="#2b3a4f";
+    page  [label="Visitor page /channel/<slug>\nWeb SDK <mynah-avatar>"];
+    dsh   [label="Agent: DeepSeek Harness plugin\n(dsh-plugin-mynah)"];
+    pc    [label="Pipecat pipeline\n(pipecat-ai-mynah: MynahVideoService)"];
+  }
+
+  core [label="Realtime core (Go, cored)\nrtc (pion) · session: turn FSM · barge-in\nmediaenc: idle-loop replay · gesture clips · VP8/H264 · Opus · PLI", fillcolor="#dbe8f7", width=6.4];
+
+  subgraph cluster_inner { label=""; style=invis;
+    brains [label="Brains (one event surface)\nlocal LLM + TTS · Qwen realtime · Pipecat bot", fillcolor="#e6f6f2", color="#3d8f7a"];
+    inst   [label="Instinct layer\nrules | Jev → picks a gesture clip\n(gated, paced, falls back)", fillcolor="#e6f6f2", color="#3d8f7a"];
+    eng    [label="Avatar engines (gRPC worker contract)\nMuseTalk 1.5 · SoulX-FlashHead (incl. half-body) · wav2lipLS", fillcolor="#e6f6f2", color="#3d8f7a"];
+  }
+
+  ctl [label="Control plane (same process, /api/v1, JWT)\nconfig layering · channels + per-engine capacity quota\nknowledge base / RAG · idle & gesture bake jobs · sessions · console", fillcolor="#dbe8f7", width=6.4];
+
+  pg      [label="Postgres + pgvector\nconfig · channels · KB · jobs", fillcolor="#f3f4f6", color="#7c8794"];
+  workers [label="GPU workers (Python)\navatar (per engine) · asr · turn · avatartrain (LivePortrait bakes) · tts-edge", fillcolor="#f3f4f6", color="#7c8794"];
+
+  page -> core [label="WebRTC A/V + DataChannel"];
+  dsh  -> core [label="REST /human /action"];
+  pc   -> eng  [label="gRPC (face mode)", style=dashed];
+  core -> brains [label="mic PCM → reply PCM"];
+  core -> inst   [label="transcript / reply text"];
+  core -> eng    [label="AudioChunk → frames"];
+  inst -> core   [label="PlayAction", style=dashed];
+  brains -> workers [label="asr · turn (local)", style=dashed];
+  eng -> workers [label="gRPC :9415 / :9417"];
+  page -> ctl [label="console (web/admin)", style=dotted];
+  ctl -> core [label="hot config · channel snapshots · quota"];
+  ctl -> pg;
+  ctl -> workers [label="HTTP /bake"];
+  {rank=same; brains; inst; eng;}
+  {rank=same; pg; workers;}
+}

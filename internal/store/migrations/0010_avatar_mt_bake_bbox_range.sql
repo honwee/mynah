@@ -1,0 +1,13 @@
+-- The bake script computes, from the actual face landmarks, the range in which
+-- bbox_shift is anatomically meaningful for THIS footage (it differs per clip)
+-- and prints it as
+--     bbox_shift adjust range: [-12~17], current: 0
+-- That line used to exist only in the container's stdout, which meant the one
+-- number an operator needs in order to re-bake with a better mouth amplitude
+-- was reachable only by reading logs on the host — the exact friction this
+-- pipeline exists to remove. Parsed out and stored so the console can show it.
+--
+-- Written mid-job (right after the landmark stage), so it is available while
+-- the bake is still running: that is the useful moment, because it tells you
+-- whether the current bake is worth waiting for.
+ALTER TABLE avatar_mt_bake_jobs ADD COLUMN bbox_range TEXT NOT NULL DEFAULT '';

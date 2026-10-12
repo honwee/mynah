@@ -1,0 +1,47 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: compile-check workers & setup scripts
+        run: |
+          python -m compileall -q workers deploy/setup
+      - name: avatartrain /train contract smoke (simulate mode)
+        run: |
+          cd workers/avatartrain
+          PL_TRAIN_MODE=simulate PL_TRAIN_SIM_SECONDS=0.5 \
+            PL_TRAIN_ARTIFACT_DIR=/tmp/pl-arti \
+            python server.py --port 9405 &
+          WORKER=$!
+          sleep 1
+          JID=$(curl -sf -X POST http://127.0.0.1:9405/train \
+            -d '{"job_id":"ci","name":"ci","video_path":"/tmp/none.mp4"}' \
+            | python -c "import sys,json;print(json.load(sys.stdin)['job_id'])")
+          for i in $(seq 1 20); do
+            S=$(curl -sf http://127.0.0.1:9405/train/status/$JID)
+            echo "$S"
+            echo "$S" | grep -q '"done"' && { kill $WORKER; exit 0; }
+            sleep 0.5
+          done
+          kill $WORKER
+          echo "worker never reached done" && exit 1

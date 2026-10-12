@@ -1,0 +1,29 @@
+name: release
+# Publishes prebuilt cored binaries on every tag v* so cloud images and
+# no-Docker installs can `curl` them (deploy/cloud/bootstrap.sh relies on
+# cored-linux-amd64 under "latest").
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions: { contents: write }
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: go.mod }
+      - run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w" -o cored-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/cored
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: cored-${{ matrix.goos }}-${{ matrix.goarch }}
+          generate_release_notes: true

@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Mynah</title>
+  <link rel="icon" type="image/png" href="/assets/favicon.png">
+
+  <!-- Theme pre-set before paint (avoid light/dark flash). Semi dark = body[theme-mode]. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem("pl-theme");
+        if (t === "dark") document.documentElement.setAttribute("data-pl-theme", "dark");
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="stylesheet" href="/vendor/bootstrap-icons.css" />
+
+  <!-- 本地化依赖（私有化部署 / 浏览器隐私拦截 CDN 时也能开）：react → react-dom → babel → semi 顺序 -->
+  <script src="/vendor/react.production.min.js"></script>
+  <script src="/vendor/react-dom.production.min.js"></script>
+  <script src="/vendor/babel.min.js"></script>
+  <script src="/vendor/semi-ui.min.js"></script>
+  <link rel="stylesheet" href="/vendor/semi.min.css" />
+
+  <style>
+    /* ============================================================
+       Mynah 访客渠道页 · Semi Design
+       应用型半身数字人主持人：人物烤在近白底，浮在 Semi 浅色主题里。
+       三画幅：PC 横屏(人左+对话右) / 手机竖屏(人上+对话 sheet) / 圆窗 PiP。
+       ============================================================ */
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+    #root { width: 100%; height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    }
+
+    /* 舞台底色固定为近白(#fbfbfd) —— 与半身图烤底一致，让人物自然“浮起”。
+       v1 无 chroma-key，所以舞台不随暗色主题变深；对话/导航 chrome 才跟随主题。 */
+    :root { --pl-stage: radial-gradient(120% 100% at 50% 0%, #ffffff 0%, #f3f4f6 70%, #eceef1 100%); }
+
+    .pl-app { width: 100vw; height: 100vh; height: 100dvh; display: flex; flex-direction: column;
+              background: var(--semi-color-bg-1); overflow: hidden; }
+
+    /* 顶栏 */
+    .pl-header {
+      flex: none; height: 56px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px; border-bottom: 1px solid var(--semi-color-border);
+      background: var(--semi-color-bg-1); z-index: 5;
+    }
+    .pl-brand { display: flex; align-items: center; gap: 10px; }
+    .pl-brand .mark {
+      width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+      background: var(--semi-color-primary); color: #fff; font-size: 16px; flex: none;
+    }
+    .pl-brand .name { font-size: 16px; font-weight: 600; color: var(--semi-color-text-0); }
+    .pl-brand .logo { height: 28px; max-width: 160px; object-fit: contain; display: block; }
+    .pl-htitle { font-size: 14px; font-weight: 600; color: var(--semi-color-text-1); }
+    .pl-hactions { display: flex; align-items: center; gap: 6px; }
+
+    /* 主区：PC = 行(人左+对话右)，手机 = 列(人上+对话下) */
+    .pl-main { flex: 1; display: flex; min-height: 0; position: relative; }
+
+    /* 舞台（半身人物） */
+    .pl-stage {
+      position: relative; flex: 1; min-width: 0; display: flex; align-items: flex-end; justify-content: center;
+      background: var(--pl-stage); overflow: hidden;
+    }
+    .pl-video {
+      width: 100%; height: 100%; object-fit: contain; object-position: center bottom; background: transparent;
+      display: block;
+    }
+    /* 抠绿模式：canvas 顶替 video 显示（video 仍在播、作纹理源），背景只在画幅内 */
+    .pl-canvas { width: 100%; height: 100%; object-fit: contain; object-position: center bottom; display: block; }
+    .pl-stage.keyed .pl-video { position: absolute; visibility: hidden; pointer-events: none; }
+    /* PC：人物略偏左，给右侧对话留呼吸 */
+    @media (min-width: 992px) {
+      .pl-video { object-position: 42% bottom; }
+    }
+
+    /* 连接状态徽标（舞台右上） */
+    .pl-badge { position: absolute; top: 14px; right: 14px; z-index: 3; }
+
+    /* 动作按钮条（舞台左下，连接后出现） */
+    .pl-actbar { position: absolute; left: 14px; bottom: 14px; z-index: 3; display: flex; gap: 8px; flex-wrap: wrap; }
+
+    /* 欢迎遮罩 */
+    .pl-welcome {
+      position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      padding: 24px; z-index: 2; background:
+        radial-gradient(120% 90% at 50% 30%, rgba(255,255,255,.0) 0%, rgba(255,255,255,.35) 100%);
+    }
+    .pl-welcome-card {
+      text-align: center; max-width: 460px; padding: 30px 28px;
+      background: var(--semi-color-bg-0); border: 1px solid var(--semi-color-border);
+      border-radius: 20px; box-shadow: var(--semi-shadow-elevated);
+    }
+
+    /* 对话面板 */
+    .pl-chat {
+      flex: none; width: 420px; display: flex; flex-direction: column; min-height: 0;
+      border-left: 1px solid var(--semi-color-border); background: var(--semi-color-bg-1);
+    }
+    .pl-msgs { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .pl-msgs::-webkit-scrollbar { width: 7px; }
+    .pl-msgs::-webkit-scrollbar-thumb { background: var(--semi-color-fill-1); border-radius: 99px; }
+
+    .pl-row { display: flex; }
+    .pl-row.user { justify-content: flex-end; }
+    .pl-row.assistant { justify-content: flex-start; }
+    .pl-bubble {
+      max-width: 84%; padding: 9px 14px; border-radius: 16px; font-size: 15px; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .pl-row.user .pl-bubble { background: var(--semi-color-primary); color: #fff; border-bottom-right-radius: 5px; }
+    .pl-row.assistant .pl-bubble {
+      background: var(--semi-color-fill-0); color: var(--semi-color-text-0); border-bottom-left-radius: 5px;
+    }
+    .pl-cursor { display: inline-block; width: 2px; height: 1em; background: currentColor; margin-left: 2px;
+                 vertical-align: -2px; animation: pl-blink .9s step-end infinite; opacity: .75; }
+    @keyframes pl-blink { 50% { opacity: 0; } }
+    .pl-think { align-self: flex-start; display: inline-flex; gap: 5px; align-items: center;
+                padding: 11px 15px; border-radius: 16px; background: var(--semi-color-fill-0); }
+    .pl-think i { width: 6px; height: 6px; border-radius: 50%; background: var(--semi-color-text-2);
+                  animation: pl-td 1.3s ease-in-out infinite; }
+    .pl-think i:nth-child(2) { animation-delay: .18s; }
+    .pl-think i:nth-child(3) { animation-delay: .36s; }
+    @keyframes pl-td { 0%,60%,100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+
+    .pl-suggest { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 18px 12px; }
+    .pl-foot-controls {
+      flex: none; padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--semi-color-border); display: flex; flex-direction: column; gap: 10px;
+    }
+    .pl-inputrow { display: flex; gap: 10px; align-items: flex-end; }
+    .pl-ctl-row { display: flex; gap: 10px; align-items: center; justify-content: center; }
+
+    /* 手机竖屏：人上 + 对话作为底部 sheet */
+    @media (max-width: 991px) {
+      .pl-main { flex-direction: column; }
+      .pl-stage { flex: none; height: 46dvh; border-bottom: 1px solid var(--semi-color-border); }
+      .pl-chat { width: 100%; flex: 1; border-left: none; border-radius: 16px 16px 0 0; margin-top: -16px;
+                 z-index: 2; box-shadow: 0 -6px 20px rgba(0,0,0,.06); }
+      .pl-htitle { display: none; }
+    }
+    @media (max-width: 991px) { .pl-footer { display: none; } }
+
+    .pl-footer {
+      flex: none; height: 42px; display: flex; align-items: center; justify-content: space-between;
+      padding: 0 18px; border-top: 1px solid var(--semi-color-border);
+      color: var(--semi-color-text-2); font-size: 12.5px; background: var(--semi-color-bg-1);
+    }
+
+    /* 圆窗 PiP：整页塌缩为右下角悬浮圆形人物窗 + 迷你控件 */
+    .pl-app.mini { background: transparent; pointer-events: none; }
+    .pl-app.mini .pl-header, .pl-app.mini .pl-footer, .pl-app.mini .pl-chat, .pl-app.mini .pl-welcome { display: none; }
+    .pl-app.mini .pl-main { position: fixed; inset: auto 20px 20px auto; width: auto; height: auto; }
+    .pl-app.mini .pl-stage {
+      width: 168px; height: 168px; border-radius: 50%; flex: none; pointer-events: auto;
+      border: 3px solid var(--semi-color-bg-0); box-shadow: var(--semi-shadow-elevated);
+      background: var(--pl-stage);
+    }
+    .pl-app.mini .pl-video { object-fit: cover; object-position: 50% 12%; }
+    .pl-mini-ctls {
+      position: absolute; bottom: -14px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; pointer-events: auto; padding: 4px 6px; border-radius: 99px;
+      background: var(--semi-color-bg-0); box-shadow: var(--semi-shadow-elevated);
+    }
+    .pl-mini-badge { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); pointer-events: none; }
+
+    .pl-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                  background: var(--semi-color-bg-1); z-index: 50; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useRef, useCallback } = React;
+    const { Button, TextArea, Avatar, Typography, Tag, Spin, Toast, Empty, Tooltip, Switch } = SemiUI;
+    const { Title, Text, Paragraph } = Typography;
+
+    // ── channel identity from URL: /channel/<slug>?k=<token> ──
+    const M = location.pathname.match(/^\/channel\/([a-z0-9][a-z0-9-]{1,62})\/?$/);
+    const SLUG = M ? M[1] : null;
+    const TOKEN = new URLSearchParams(location.search).get("k") || "";
+
+    const Icon = ({ n }) => <i className={"bi bi-" + n} />;
+
+    // ── 绿幕抠像（WebGL chroma key，OBS 同款算法：similarity/smoothness/spill）──
+    // video 元素作纹理源，背景图作第二纹理在 shader 内合成——背景只替换视频画幅内
+    // 的绿幕区域（人物/桌子保持原位压在背景上），画幅外仍是舞台底色，不铺整页。
+    // 素材绿幕为 RGB(0,177,64)。兼容性好（不依赖 MediaStreamTrackProcessor）。
+    // 注意：中性色（白衬衫/眼白/灰发）在 UV 色度上离绿仅 ~0.33，similarity 必须
+    // 远小于它；greenness 保护——绿色不占优的像素一律不透明；despill 全局生效
+    // （边缘混合像素不够绿抠不掉、但颜色带绿 → 把 g 压回 max(r,b) 即消绿线，
+    //   素材铁律禁绿色服装所以安全）。spill=去溢色强度 0-1。
+    // 参数默认值与控制台「操练场 → 绿幕调试」保存的 avatar.chroma 一致；
+    // /channel/:slug/config 返回的 chroma 覆盖这里的默认。
+    const CHROMA = { key: [0, 177, 64], similarity: 0.10, smoothness: 0.08, spill: 1.0 };
+    function chromaFromCfg(cfg) {
+      const ck = (cfg && cfg.chroma) || {};
+      const m = /^#([0-9a-f]{6})$/i.exec(ck.key_color || "");
+      return {
+        key: m ? [parseInt(m[1].slice(0,2),16), parseInt(m[1].slice(2,4),16), parseInt(m[1].slice(4,6),16)] : CHROMA.key,
+        similarity: ck.similarity != null ? ck.similarity : CHROMA.similarity,
+        smoothness: ck.smoothness != null ? ck.smoothness : CHROMA.smoothness,
+        spill: ck.spill != null ? ck.spill : CHROMA.spill,
+      };
+    }
+    function makeChromaKey(canvas, video, bgURL, ck) {
+      const gl = canvas.getContext("webgl", { premultipliedAlpha: false, alpha: true });
+      if (!gl) return null;
+      const vsrc = "attribute vec2 p;varying vec2 uv;void main(){uv=vec2((p.x+1.)/2.,1.-(p.y+1.)/2.);gl_Position=vec4(p,0.,1.);}";
+      const fsrc = `
+        precision mediump float; varying vec2 uv; uniform sampler2D tex, bgTex;
+        uniform vec3 keyRGB; uniform float similarity, smoothness, spill, hasBg;
+        uniform vec2 bgScale, bgOffset;
+        vec2 rgb2uv(vec3 c){ return vec2(c.r*-.169+c.g*-.331+c.b*.5+.5, c.r*.5+c.g*-.419+c.b*-.081+.5); }
+        void main(){
+          vec4 c = texture2D(tex, uv);
+          float d = distance(rgb2uv(c.rgb), rgb2uv(keyRGB));
+          float alpha = smoothstep(similarity, similarity + smoothness, d);
+          float greenness = c.g - max(c.r, c.b);
+          alpha = mix(1., alpha, smoothstep(0., .08, greenness)); // 非绿像素保持不透明
+          // despill：绿超出 r/b 的部分按 spill 强度压回（边缘绿线/桌面绿反光同治）
+          vec3 fg = vec3(c.r, mix(c.g, min(c.g, max(c.r, c.b)), spill), c.b);
+          vec3 bg = texture2D(bgTex, uv * bgScale + bgOffset).rgb;
+          // 有背景图：绿幕处显示背景（cover 裁切）；无背景图：绿幕处透明
+          gl_FragColor = mix(vec4(fg, 1.) * alpha, vec4(mix(bg, fg, alpha), 1.), hasBg);
+        }`;
+      function sh(type, src) { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; }
+      const prog = gl.createProgram();
+      gl.attachShader(prog, sh(gl.VERTEX_SHADER, vsrc));
+      gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, fsrc));
+      gl.linkProgram(prog); gl.useProgram(prog);
+      const buf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+      const loc = gl.getAttribLocation(prog, "p");
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+      function makeTex(unit) {
+        const t = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE0 + unit);
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        return t;
+      }
+      makeTex(0); // video
+      makeTex(1); // background image
+      gl.activeTexture(gl.TEXTURE1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+      gl.uniform1i(gl.getUniformLocation(prog, "tex"), 0);
+      gl.uniform1i(gl.getUniformLocation(prog, "bgTex"), 1);
+      gl.uniform3f(gl.getUniformLocation(prog, "keyRGB"), ck.key[0]/255, ck.key[1]/255, ck.key[2]/255);
+      gl.uniform1f(gl.getUniformLocation(prog, "similarity"), ck.similarity);
+      gl.uniform1f(gl.getUniformLocation(prog, "smoothness"), ck.smoothness);
+      gl.uniform1f(gl.getUniformLocation(prog, "spill"), ck.spill);
+      const uHasBg = gl.getUniformLocation(prog, "hasBg");
+      const uBgScale = gl.getUniformLocation(prog, "bgScale");
+      const uBgOffset = gl.getUniformLocation(prog, "bgOffset");
+      gl.uniform1f(uHasBg, 0); gl.uniform2f(uBgScale, 1, 1); gl.uniform2f(uBgOffset, 0, 0);
+      let bgW = 0, bgH = 0;
+      if (bgURL) {
+        const img = new Image();
+        img.crossOrigin = "anonymous"; // 同源/开放跨域可作纹理；受限跨域则回退纯抠像
+        img.onload = () => {
+          try {
+            gl.activeTexture(gl.TEXTURE1);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+            bgW = img.naturalWidth; bgH = img.naturalHeight;
+            gl.uniform1f(uHasBg, 1);
+          } catch (e) {}
+        };
+        img.src = bgURL;
+      }
+      function fitBg() { // cover：背景图等比铺满视频画幅，居中裁切
+        if (!bgW || !canvas.width) return;
+        const s = Math.max(canvas.width / bgW, canvas.height / bgH);
+        const sx = canvas.width / (bgW * s), sy = canvas.height / (bgH * s);
+        gl.uniform2f(uBgScale, sx, sy);
+        gl.uniform2f(uBgOffset, (1 - sx) / 2, (1 - sy) / 2);
+      }
+      let raf = 0;
+      function draw() {
+        if (video.readyState >= 2 && video.videoWidth) {
+          if (canvas.width !== video.videoWidth) { canvas.width = video.videoWidth; canvas.height = video.videoHeight; }
+          gl.viewport(0, 0, canvas.width, canvas.height);
+          fitBg();
+          gl.activeTexture(gl.TEXTURE0);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        }
+        raf = requestAnimationFrame(draw);
+      }
+      raf = requestAnimationFrame(draw);
+      return { stop() { cancelAnimationFrame(raf); } };
+    }
+
+    function Channel() {
+      const [status, setStatus] = useState("loading");   // loading | error | ready
+      const [errInfo, setErrInfo] = useState({ title: "", msg: "" });
+      const [cfg, setCfg] = useState(null);
+      const [connected, setConnected] = useState(false);
+      const [connecting, setConnecting] = useState(false);
+      const [messages, setMessages] = useState([]);       // {id, role, content, partial}
+      const [thinking, setThinking] = useState(false);
+      const [speaking, setSpeaking] = useState(false);
+      const [micPref, setMicPref] = useState(true);
+      const [micOn, setMicOn] = useState(false);
+      const [micAvailable, setMicAvailable] = useState(false);
+      const [sugOffset, setSugOffset] = useState(0);
+      const [theme, setTheme] = useState(
+        document.documentElement.getAttribute("data-pl-theme") === "dark" ? "dark" : "light");
+      const [mini, setMini] = useState(false);
+
+      const pcRef = useRef(null), dcRef = useRef(null), sidRef = useRef(null);
+      const micStreamRef = useRef(null), videoRef = useRef(null);
+      const canvasRef = useRef(null), keyerRef = useRef(null);
+      const accRef = useRef(""), seqRef = useRef(0), msgsEndRef = useRef(null);
+
+      const suggestions = (cfg && Array.isArray(cfg.suggested_questions)) ? cfg.suggested_questions : [];
+      const keyed = !!(cfg && cfg.bg_image); // 频道配了背景图 → 前端抠绿铺背景
+
+      // ── 绿幕抠像生命周期：连接后启动逐帧上屏，断开即停 ──
+      useEffect(() => {
+        if (connected && keyed && canvasRef.current && videoRef.current && !keyerRef.current) {
+          keyerRef.current = makeChromaKey(canvasRef.current, videoRef.current, cfg.bg_image, chromaFromCfg(cfg));
+        }
+        if (!connected && keyerRef.current) { keyerRef.current.stop(); keyerRef.current = null; }
+        return () => { if (keyerRef.current) { keyerRef.current.stop(); keyerRef.current = null; } };
+      }, [connected, keyed]);
+
+      // ── theme (Semi dark = body[theme-mode]) ──
+      useEffect(() => {
+        const body = document.body;
+        if (theme === "dark") body.setAttribute("theme-mode", "dark");
+        else body.removeAttribute("theme-mode");
+        try { localStorage.setItem("pl-theme", theme); } catch (e) {}
+      }, [theme]);
+
+      // ── load channel config ──
+      useEffect(() => {
+        if (!SLUG) { setErrInfo({ title: "链接无效", msg: "请通过正确的频道分享链接访问。" }); setStatus("error"); return; }
+        fetch("/channel/" + SLUG + "/config")
+          .then((r) => { if (r.status === 404) throw { kind: "notfound" }; if (!r.ok) throw { kind: "error" }; return r.json(); })
+          .then((c) => {
+            setCfg(c);
+            if (c.theme_color) document.body.style.setProperty("--semi-color-primary", c.theme_color);
+            document.title = (c.brand_name || "Mynah") + " · " + (c.name || "数字人");
+            setStatus("ready");
+          })
+          .catch((e) => {
+            if (e && e.kind === "notfound") setErrInfo({ title: "频道不存在", msg: "该频道不存在或已下线，请联系提供方。" });
+            else setErrInfo({ title: "加载失败", msg: "无法加载频道信息，请稍后重试。" });
+            setStatus("error");
+          });
+      }, []);
+
+      // ── auto-scroll chat ──
+      useEffect(() => { if (msgsEndRef.current) msgsEndRef.current.scrollTop = msgsEndRef.current.scrollHeight; },
+        [messages, thinking]);
+
+      // ── message helpers (functional updates: safe inside the once-bound dc handler) ──
+      const pushMsg = (role, content, partial) =>
+        setMessages((prev) => [...prev, { id: ++seqRef.current, role, content: content || "", partial: !!partial }]);
+      const updateLastPartial = (content) =>
+        setMessages((prev) => {
+          const out = prev.slice(); const l = out[out.length - 1];
+          if (l && l.partial) out[out.length - 1] = { ...l, content }; else out.push({ id: ++seqRef.current, role: "assistant", content, partial: true });
+          return out;
+        });
+
+      // ── DataChannel subtitle protocol (verbatim from the vanilla page) ──
+      const onDC = useCallback((raw) => {
+        let j; try { j = JSON.parse(raw); } catch (e) { return; }
+        if (j.status === "start") {
+          accRef.current = ""; setSpeaking(true); setThinking(false);
+          pushMsg("assistant", "", true);
+        } else if (j.status === "ing" && j.text) {
+          accRef.current += j.text; setThinking(false); updateLastPartial(accRef.current);
+        } else if (j.status === "end") {
+          setSpeaking(false);
+          setMessages((prev) => {
+            const out = prev.slice(); const l = out[out.length - 1];
+            if (l && l.partial) { if (!l.content) out.pop(); else out[out.length - 1] = { ...l, partial: false }; }
+            return out;
+          });
+        } else if (j.status === "user" && j.text) {
+          pushMsg("user", j.text);
+        }
+      }, []);
+
+      // ── connect (WebRTC; same signaling contract) ──
+      const start = useCallback(async () => {
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        pcRef.current = pc;
+        const dc = pc.createDataChannel("chat", { ordered: true });
+        dc.onmessage = (ev) => onDC(ev.data);
+        dcRef.current = dc;
+        pc.addTransceiver("video", { direction: "recvonly" });
+
+        let mic = false;
+        if (micPref && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          try {
+            const ms = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+            micStreamRef.current = ms; ms.getTracks().forEach((t) => pc.addTrack(t, ms)); mic = true;
+          } catch (e) { pc.addTransceiver("audio", { direction: "recvonly" }); }
+        } else { pc.addTransceiver("audio", { direction: "recvonly" }); }
+
+        pc.ontrack = (ev) => { if (ev.streams && ev.streams[0] && videoRef.current) videoRef.current.srcObject = ev.streams[0]; };
+        pc.onconnectionstatechange = () => {
+          const st = pc.connectionState;
+          if (st === "connected") onConnected(mic);
+          else if (st === "failed" || st === "closed" || st === "disconnected") { if (connectedRef.current) teardown(); }
+        };
+
+        const offer = await pc.createOffer(); await pc.setLocalDescription(offer); await waitIce(pc);
+        const res = await fetch("/channel/offer", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type, slug: SLUG, token: TOKEN }),
+        });
+        if (!res.ok) { const e = new Error("offer rejected"); e.status = res.status; throw e; }
+        const ans = await res.json();
+        sidRef.current = ans.sessionid;
+        await pc.setRemoteDescription({ type: "answer", sdp: ans.sdp });
+      }, [micPref, onDC]);
+
+      const connectedRef = useRef(false);
+      useEffect(() => { connectedRef.current = connected; }, [connected]);
+
+      function waitIce(pc) {
+        if (pc.iceGatheringState === "complete") return Promise.resolve();
+        return new Promise((resolve) => {
+          const done = setTimeout(resolve, 2000);
+          pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") { clearTimeout(done); resolve(); } };
+        });
+      }
+      function onConnected(mic) {
+        setConnected(true); setConnecting(false);
+        setMicAvailable(mic); setMicOn(mic);
+      }
+
+      const handleConnect = () => {
+        if (connecting || connected) return;
+        setConnecting(true);
+        start().catch((e) => {
+          setConnecting(false);
+          const s = e && e.status;
+          const M = { 401: ["需要访问令牌", "此频道受令牌保护，请使用包含密钥的完整分享链接。"],
+                      403: ["访问受限", "当前来源或网络不在该频道的允许范围内。"],
+                      404: ["频道不存在", "该频道不存在或已下线。"],
+                      429: ["当前访问人数较多", "频道已达并发上限，请稍后再试。"],
+                      503: ["数字人正忙", "当前所有数字人都在通话中，请稍后再试。"] };
+          if (M[s]) { setErrInfo({ title: M[s][0], msg: M[s][1] }); setStatus("error"); }
+          else Toast.error({ content: (e && e.message) || "无法建立连接，请重试。" });
+        });
+      };
+
+      function teardown() {
+        try { if (pcRef.current) pcRef.current.close(); } catch (e) {}
+        if (micStreamRef.current) { micStreamRef.current.getTracks().forEach((t) => t.stop()); micStreamRef.current = null; }
+        pcRef.current = null; dcRef.current = null; sidRef.current = null;
+        setConnected(false); setConnecting(false); setMicOn(false); setMicAvailable(false);
+        setSpeaking(false); setThinking(false); accRef.current = ""; setMessages([]); setMini(false);
+        if (videoRef.current) videoRef.current.srcObject = null;
+      }
+
+      const sendText = (text) => {
+        if (!sidRef.current || !text) return;
+        pushMsg("user", text); setThinking(true);
+        fetch("/human", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, type: "chat", interrupt: true, sessionid: sidRef.current }) })
+          .catch(() => setThinking(false));
+      };
+      const [draft, setDraft] = useState("");
+      const handleSend = () => { const t = draft.trim(); if (!t) return; setDraft(""); sendText(t); };
+      const handleInterrupt = () => {
+        if (!sidRef.current) return;
+        fetch("/interrupt_talk", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionid: sidRef.current }) }).catch(() => {});
+      };
+      // 动作编排演示：触发一次性动作片（待机时播放，播完自动回待机）
+      const actions = (cfg && Array.isArray(cfg.actions)) ? cfg.actions : [];
+      const ACTION_LABELS = { wave: "挥手", nod: "点头", open: "摊手", point: "指引" };
+      const [actBusy, setActBusy] = useState(null);
+      const playAction = (id) => {
+        if (!sidRef.current || actBusy) return;
+        setActBusy(id);
+        fetch("/action", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionid: sidRef.current, action: id }) }).catch(() => {});
+        setTimeout(() => setActBusy(null), 3000);
+      };
+      const toggleMic = () => {
+        if (!micStreamRef.current) return;
+        const next = !micOn; setMicOn(next);
+        micStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = next; });
+      };
+
+      // ════════════════════ render ════════════════════
+      if (status === "loading")
+        return <div className="pl-overlay"><Spin size="large" tip="正在加载…" /></div>;
+
+      if (status === "error")
+        return (
+          <div className="pl-overlay">
+            <Empty
+              image={<i className="bi bi-exclamation-triangle" style={{ fontSize: 52, color: "var(--semi-color-warning)" }} />}
+              title={errInfo.title} description={errInfo.msg}
+              style={{ padding: 24 }}>
+              <Button theme="solid" onClick={() => location.reload()}>重新尝试</Button>
+            </Empty>
+          </div>
+        );
+
+      const brand = (cfg && cfg.brand_name) || "Mynah";
+      const name = (cfg && cfg.name) || "数字人";
+
+      // 半身人物舞台（mini / full 共用同一个 <video>，始终挂载不卸载，避免断流）
+      const stage = (
+        <div className={"pl-stage" + (keyed ? " keyed" : "")}>
+          {/* 抠绿时 video 隐藏但继续播（声音 + 作 WebGL 纹理源），canvas 顶替显示；
+              背景图在 shader 内只合成到视频画幅，舞台其余区域保持原底色 */}
+          <video ref={videoRef} className="pl-video" autoPlay playsInline />
+          {keyed && <canvas ref={canvasRef} className="pl-canvas" />}
+          {connected && (
+            <div className={mini ? "pl-mini-badge" : "pl-badge"}>
+              <Tag color="green" prefixIcon={<i className="bi bi-broadcast" />} size={mini ? "small" : "large"} shape="circle">
+                {!mini && "已连接"}
+              </Tag>
+            </div>
+          )}
+          {connected && !mini && actions.length > 0 && (
+            <div className="pl-actbar">
+              {actions.map((a) => (
+                <Button key={a} theme="light" size="small" style={{ borderRadius: 99 }}
+                        disabled={!!actBusy || speaking} loading={actBusy === a}
+                        icon={<i className="bi bi-magic" />} onClick={() => playAction(a)}>
+                  {ACTION_LABELS[a] || a}
+                </Button>
+              ))}
+            </div>
+          )}
+          {!connected && !mini && (
+            <div className="pl-welcome">
+              <div className="pl-welcome-card">
+                {cfg && cfg.avatar_preview
+                  ? <Avatar size="large" src={cfg.avatar_preview} style={{ margin: "0 auto 18px" }} />
+                  : <Avatar size="large" style={{ margin: "0 auto 18px", background: "var(--semi-color-primary)" }}><i className="bi bi-person" /></Avatar>}
+                <Title heading={3} style={{ margin: "0 0 8px" }}>{name}</Title>
+                {cfg && cfg.description && <Paragraph type="tertiary" style={{ margin: "0 auto 22px", maxWidth: 360 }}>{cfg.description}</Paragraph>}
+                <Button theme="solid" size="large" loading={connecting} onClick={handleConnect}
+                        style={{ borderRadius: 99, padding: "0 36px" }} icon={<i className="bi bi-chat-dots" />}>
+                  {connecting ? "连接中…" : "开始对话"}
+                </Button>
+                <div style={{ marginTop: 20, display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }}>
+                  <Switch checked={micPref} onChange={setMicPref} size="small" />
+                  <Text type="tertiary" size="small">接通后开启麦克风语音对话</Text>
+                </div>
+              </div>
+            </div>
+          )}
+          {mini && (
+            <div className="pl-mini-ctls">
+              {micAvailable && (
+                <Button theme={micOn ? "solid" : "light"} type={micOn ? "primary" : "tertiary"} shape="circle"
+                        icon={<i className={"bi " + (micOn ? "bi-mic-fill" : "bi-mic-mute")} />} onClick={toggleMic} size="small" />
+              )}
+              <Button theme="light" type="danger" shape="circle" disabled={!speaking}
+                      icon={<i className="bi bi-stop-fill" />} onClick={handleInterrupt} size="small" />
+              <Tooltip content="还原窗口">
+                <Button theme="solid" shape="circle" icon={<i className="bi bi-arrows-angle-expand" />}
+                        onClick={() => setMini(false)} size="small" />
+              </Tooltip>
+            </div>
+          )}
+        </div>
+      );
+
+      // 对话面板
+      const chat = (
+        <div className="pl-chat">
+          <div className="pl-msgs" ref={msgsEndRef}>
+            {messages.length === 0 && !thinking ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--semi-color-text-2)" }}>
+                <i className="bi bi-chat" style={{ fontSize: 30 }} />
+                <Text type="tertiary">开始您的对话</Text>
+              </div>
+            ) : (
+              messages.map((m) => (
+                <div key={m.id} className={"pl-row " + m.role}>
+                  <div className="pl-bubble">{m.content}{m.partial && <span className="pl-cursor" />}</div>
+                </div>
+              ))
+            )}
+            {thinking && <div className="pl-think"><i /><i /><i /></div>}
+          </div>
+
+          {connected && suggestions.length > 0 && (
+            <div className="pl-suggest">
+              {Array.from({ length: Math.min(3, suggestions.length) }, (_, i) => suggestions[(sugOffset + i) % suggestions.length]).map((q, i) => (
+                <Tag key={i} size="large" style={{ cursor: "pointer", maxWidth: "100%" }} onClick={() => sendText(q)}>{q}</Tag>
+              ))}
+              {suggestions.length > 3 && (
+                <Tag size="large" color="white" style={{ cursor: "pointer" }} onClick={() => setSugOffset((o) => (o + 3) % suggestions.length)}>
+                  <i className="bi bi-arrow-repeat" /> 换一批
+                </Tag>
+              )}
+            </div>
+          )}
+
+          {connected && (
+            <div className="pl-foot-controls">
+              <div className="pl-inputrow">
+                <TextArea value={draft} onChange={setDraft} autosize rows={1} placeholder="输入您的问题…（回车发送）"
+                          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                          style={{ flex: 1 }} />
+                <Button theme="solid" shape="circle" icon={<i className="bi bi-arrow-up" />} onClick={handleSend} disabled={!draft.trim()} />
+              </div>
+              <div className="pl-ctl-row">
+                {micAvailable && (
+                  <Tooltip content={micOn ? "关闭麦克风" : "开启麦克风"}>
+                    <Button theme={micOn ? "solid" : "light"} type={micOn ? "primary" : "tertiary"} shape="circle"
+                            icon={<i className={"bi " + (micOn ? "bi-mic-fill" : "bi-mic-mute")} />} onClick={toggleMic} />
+                  </Tooltip>
+                )}
+                <Tooltip content="打断回复">
+                  <Button theme="light" type="danger" shape="circle" disabled={!speaking}
+                          icon={<i className="bi bi-stop-circle" />} onClick={handleInterrupt} />
+                </Tooltip>
+                <Button theme="borderless" type="tertiary" onClick={teardown} icon={<i className="bi bi-box-arrow-right" />}>结束会话</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+
+      return (
+        <div className={"pl-app" + (mini ? " mini" : "")}>
+          {!mini && (
+            <div className="pl-header">
+              <div className="pl-brand">
+                {cfg && cfg.brand_logo
+                  ? <img className="logo" src={cfg.brand_logo} alt={brand} />
+                  : <img className="logo" src="/assets/mynah-mark.png" alt="" style={{ height: 26, width: 26, marginRight: 8, borderRadius: 7 }} />}
+                {/* logo 本身即品牌标识，有 logo 时不再重复品牌文字；路径用绝对的 /assets，频道页在 /channel/<slug> 下 */}
+                {!(cfg && cfg.brand_logo) && <span className="name">{brand}</span>}
+              </div>
+              {/* 频道名与品牌名相同（单频道品牌站的常态）时顶栏中间不再重复 */}
+              <div className="pl-htitle">{name !== brand ? name : ""}</div>
+              <div className="pl-hactions">
+                {cfg && cfg.access_mode === "token" && (
+                  <Tag prefixIcon={<i className="bi bi-shield-lock" />} color="grey">受保护</Tag>
+                )}
+                {connected && (
+                  <Tooltip content="圆窗模式">
+                    <Button theme="borderless" type="tertiary" icon={<i className="bi bi-pip" />} onClick={() => setMini(true)} />
+                  </Tooltip>
+                )}
+                <Tooltip content={theme === "dark" ? "浅色" : "深色"}>
+                  <Button theme="borderless" type="tertiary"
+                          icon={<i className={"bi " + (theme === "dark" ? "bi-sun" : "bi-moon-stars")} />}
+                          onClick={() => setTheme(theme === "dark" ? "light" : "dark")} />
+                </Tooltip>
+              </div>
+            </div>
+          )}
+
+          <div className="pl-main">
+            {stage}
+            {!mini && connected && chat}
+          </div>
+
+          {!mini && (
+            <div className="pl-footer">
+              <span>本服务由 AI 数字人提供，内容仅供参考</span>
+              <span>Powered by Mynah</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<Channel />);
+  </script>
+</body>
+</html>

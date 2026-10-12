@@ -1,0 +1,28 @@
+name: Bug report
+description: Something doesn't work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened / what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: GPU model + driver, OS, Docker/compose or bare-process, which avatar engine (flashhead/wav2lipls), commit or tag.
+      placeholder: |
+        GPU: RTX 4090, driver 580.x
+        Deploy: docker compose (deploy/compose)
+        Engine: flashhead
+        Version: v0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: cored log lines around the failure; worker log if engine-related.
+      render: text

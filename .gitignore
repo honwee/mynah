@@ -1,0 +1,31 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
+
+# Local compose env (copy .env.example -> .env)
+deploy/compose/.env
+
+# Local scratch/artifact root (PL_DATA_DIR default): caches, uploads, bakes.
+# The launcher scripts and the worker default here rather than at an absolute
+# path from some other machine — point PL_DATA_DIR at a big disk to move it.
+/.data/
+
+# Local TLS certs (cored self-signs tls/cored.{crt,key} if absent)
+tls/
+*.crt
+*.key
+*.pem
+
+# Build / probe outputs
+/_out/
+*_out/
+
+# Regenerable test fixtures
+workers/asr/*.opuspkts
+
+# Go build artifacts
+/cored
+/admind

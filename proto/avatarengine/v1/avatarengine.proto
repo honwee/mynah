@@ -1,0 +1,132 @@
+syntax = "proto3";
+
+// PersonaLive unified streaming worker contract.
+// First concrete service: AvatarEngine (audio -> video frames).
+// The same Session(stream)->stream(stream) shape is reused later for TTS/ASR.
+package personalive.avatarengine.v1;
+
+// ---- service ----------------------------------------------------------------
+
+service AvatarEngine {
+  // Bidirectional realtime session: client streams control + audio in,
+  // server streams video (and optionally passthrough audio) out.
+  rpc Session(stream ClientFrame) returns (stream ServerFrame);
+
+  // Liveness / readiness (engine loaded + warmed up).
+  rpc Health(HealthRequest) returns (HealthReply);
+
+  // Preload an avatar so a later Session using it starts instantly.
+  //
+  // Loading a baked avatar costs ~15s (decoding several hundred frames), and
+  // Session does it INLINE — Ready is only emitted once the engine has the
+  // material, so a visitor who is the first to request an avatar waits on a
+  // blank screen. Preload moves that cost to an ADMIN action (binding an
+  // avatar to a channel) where waiting is expected and harmless.
+  //
+  // Idempotent: preloading an already-loaded avatar returns immediately.
+  rpc Preload(PreloadRequest) returns (PreloadReply);
+}
+
+// ---- client -> server -------------------------------------------------------
+
+// Resolved session spec, handed down by the control plane at session start.
+message SessionSpec {
+  string session_id    = 1;
+  string avatar_id     = 2;  // logical id (P1: worker may use preloaded avatar)
+  string cond_image    = 3;  // optional portrait path override
+  bool   use_face_crop = 4;
+  bool   av_chunks     = 5;  // also emit AudioFrame for a/v sync
+  bool   idle_local    = 6;  // client replays its own idle loop during silence:
+                             // worker emits NOTHING while idle (no frames, no
+                             // audio) and marks turn boundaries with SpeechEnd
+  string video_codec   = 7;  // "vp8" (default) or "h264" — per-session, chosen
+                             // by the client from the browser's SDP offer
+}
+
+// Preload asks the worker to have an avatar resident before any session needs
+// it. avatar is the same value Session takes in SessionSpec.cond_image (a
+// worker-visible path, or an id the worker was started with).
+message PreloadRequest {
+  string avatar = 1;
+}
+
+message PreloadReply {
+  bool   ready      = 1;  // avatar is resident and ready to serve
+  string detail     = 2;  // engine-specific note, or the failure reason
+  bool   already    = 3;  // it was already loaded (no work done)
+  int64  load_ms    = 4;  // time spent loading (0 when already resident)
+}
+
+message AudioChunk {
+  bytes  pcm_f32le_16k = 1;  // mono float32 PCM @16k, little-endian
+  uint64 seq           = 2;
+}
+
+message Interrupt {}   // barge-in: drop in-flight generation, bump gen
+message Close {}       // end session
+message SetAction { string action = 1; }
+
+message ClientFrame {
+  oneof msg {
+    SessionSpec start      = 1;
+    AudioChunk  audio      = 2;
+    Interrupt   interrupt  = 3;
+    Close       close      = 4;
+    SetAction   set_action = 5;
+  }
+}
+
+// ---- server -> client -------------------------------------------------------
+
+message Ready {
+  uint32 width       = 1;
+  uint32 height      = 2;
+  uint32 fps         = 3;
+  uint32 sample_rate = 4;
+}
+
+message VideoFrame {
+  uint64 idx     = 1;
+  uint32 width   = 2;
+  uint32 height  = 3;
+  string pix_fmt = 4;  // "bgr24"
+  bytes  data    = 5;  // width*height*3 uint8
+  uint64 gen     = 6;  // generation; frames from a stale gen are post-interrupt
+}
+
+message AudioFrame {
+  uint64 seq           = 1;
+  bytes  pcm_f32le_16k = 2;
+}
+
+message Stats {
+  double rtf            = 1;
+  double first_frame_ms = 2;
+  uint64 frames         = 3;
+}
+
+message EngineError { string message = 1; }
+
+// End of a speech turn (idle_local mode): the worker has flushed the last
+// speech frame/audio and will stay silent until new audio arrives. The client
+// switches back to its local idle loop on receipt.
+message SpeechEnd { uint64 gen = 1; }
+
+message ServerFrame {
+  oneof msg {
+    Ready       ready      = 1;
+    VideoFrame  video      = 2;
+    AudioFrame  audio      = 3;
+    Stats       stats      = 4;
+    EngineError error      = 5;
+    SpeechEnd   speech_end = 6;
+  }
+}
+
+// ---- health -----------------------------------------------------------------
+
+message HealthRequest {}
+message HealthReply {
+  bool   ready  = 1;
+  string detail = 2;
+}

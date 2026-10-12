@@ -1,0 +1,35 @@
+# Mynah FlashHead avatar worker (512 float-head engine). Pins mirror the
+# host `flashhead` conda env that runs this engine in production — exact
+# versions, not the SoulX repo's loose >= ranges. torch's cu121 wheel bundles
+# the CUDA runtime, so only the NVIDIA driver (via CDI) is needed at runtime.
+#
+# Deliberately omitted vs SoulX requirements.txt: xformers / decord / gradio —
+# the prod flashhead env does not install them and the gRPC worker path doesn't
+# need them, so leaving them out keeps the build fast and reliable.
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+numpy==2.2.6
+transformers==4.57.3
+tokenizers==0.22.2
+diffusers==0.36.0
+accelerate==1.12.0
+safetensors==0.7.0
+einops==0.8.2
+xfuser==0.4.5
+imageio==2.37.2
+imageio-ffmpeg==0.6.0
+easydict==1.13
+ftfy
+scikit-image==0.25.2
+loguru==0.7.3
+pyloudnorm==0.2.0
+mediapipe==0.10.9
+librosa==0.11.0
+soundfile==0.13.1
+scipy==1.15.3
+av==16.1.0
+opencv-python-headless==4.13.0.92
+grpcio==1.48.2
+protobuf==3.20.3
