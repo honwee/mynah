@@ -53,7 +53,7 @@ offer → 与 Python 形象引擎建立 gRPC 会话 → 喂入 TTS 音频(文本
 
 ## 快速开始
 
-需要一张 NVIDIA 显卡跑形象引擎（wav2lipLS 6GB，MuseTalk/FlashHead 12GB，两路同时在线 24GB）、一个 LLM 端点（本地 ollama/vLLM 或任意 OpenAI 兼容 API）和一个 TTS。栈默认用 EdgeTTS 起步，让第一次对话不等 TTS 模型下载；控制台里可热切到 Qwen3-TTS（音色克隆）或云端音色。本机没有显卡时，形象 worker 跑在 GPU 机器上、cored 跑在任何地方即可。
+需要一张 NVIDIA 显卡跑形象引擎（wav2lipLS 6GB，256 版权重公开自动下载、384 版在社区群发放；MuseTalk/FlashHead 12GB，两路同时在线 24GB）、一个 LLM 端点（本地 ollama/vLLM 或任意 OpenAI 兼容 API）和一个 TTS。栈默认用 EdgeTTS 起步，让第一次对话不等 TTS 模型下载；控制台里可热切到 Qwen3-TTS（音色克隆）或云端音色。本机没有显卡时，形象 worker 跑在 GPU 机器上、cored 跑在任何地方即可。
 
 **云镜像一键体验（单机体验版）**：在 AutoDL 用 [Mynah 社区镜像](https://www.codewithgpu.com/i/honwee/mynah/Mynah) 开一台 24GB 显卡实例，执行 `~/mynah/mynahctl start`，再开 SSH 隧道即可，详见[云镜像](https://honwee.github.io/mynah/zh/guide/cloud-images)。
 
@@ -82,8 +82,8 @@ docker compose up -d --build
 ## 商业支持
 
 引擎永久免费(Apache-2.0)。需要生产落地帮助的团队,我们提供付费服务:
-部署与调优、定制形象/音色、集成开发、托管运行。在 issue 区加 `commercial`
-标签或通过仓库主页联系方式找到我们。<!-- TODO: 替换为直接联系方式 -->
+部署与调优、定制形象/音色、集成开发、托管运行。邮件 **mynah@au56.com**，
+或在 issue 区加 `commercial` 标签。
 
 ## 更多
 

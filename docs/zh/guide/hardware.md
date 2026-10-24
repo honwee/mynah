@@ -8,10 +8,12 @@ title: 硬件要求与引擎选择
 
 | 档位 | 数字人引擎 | 显存 | 能跑的卡 |
 |---|---|---|---|
-| 最省 | wav2lipLS（384）≈ 2 GB + 语音识别 1.4 GB，EdgeTTS 不占 | ≈ 3.5 GB | 任何 6 GB 显卡 |
+| 最省 | wav2lipLS（256）≈ 2 GB + 语音识别 1.4 GB，EdgeTTS 不占 | ≈ 3.5 GB | 任何 6 GB 显卡 |
 | 画质 | FlashHead ≈ 6.6 GB 或 MuseTalk 1.5 ≈ 7.7 GB，+ 语音识别 | ≈ 8–9 GB | 12 GB 显卡，一路实时 |
 | 并发池 | 2 × MuseTalk + 语音识别 | ≈ 17 GB | 24 GB 显卡，2–3 路 |
 | 没有显卡 | 远端数字人 worker + 云端 LLM/TTS | 0 | 笔记本 / 云主机只跑 cored 和控制台 |
+
+wav2lipLS 权重：256 版公开，`deploy/setup/wav2lipls.sh` 自动下载；更清晰的 384 版在社区群发放，或邮件 mynah@au56.com 索取。
 
 怎么选：wav2lipLS 最便宜也最糙；MuseTalk 对任意素材最鲁棒；FlashHead 只要一张肖像不用烘焙，但是 512² 头肩范式。
 

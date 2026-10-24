@@ -131,10 +131,14 @@ host, steady state per worker; the console recomputes capacity from your GPU):
 
 | profile | avatar engine | VRAM | fits on |
 |---|---|---|---|
-| **Lightest** | wav2lipLS (384) ≈ **2 GB** + ASR 1.4 GB, EdgeTTS 0 | ≈ 3.5 GB | any 6 GB card (RTX 2060 / 3050 / 4060 class) |
+| **Lightest** | wav2lipLS (256) ≈ **2 GB** + ASR 1.4 GB, EdgeTTS 0 | ≈ 3.5 GB | any 6 GB card (RTX 2060 / 3050 / 4060 class) |
 | Quality | FlashHead ≈ 6.6 GB *or* MuseTalk 1.5 ≈ 7.7 GB, + ASR | ≈ 8–9 GB | 12 GB card (RTX 3060 12G / 4070) — one live session |
 | Pool | 2 × MuseTalk + ASR, or MuseTalk + FlashHead | ≈ 17–20 GB | 24 GB card (3090 / 4090) — 2–3 concurrent sessions |
 | **No GPU** | remote avatar worker + cloud LLM/TTS | 0 | laptop / VPS runs `cored` + console |
+
+wav2lipLS weights: the **256** checkpoint is public and downloaded automatically
+([Release asset](https://github.com/honwee/mynah/releases/download/v0.1.0/wav2lipls-256.pth)); the sharper **384**
+checkpoint is distributed in the community group — or ask at mynah@au56.com.
 
 - **TTS**: EdgeTTS (default) uses no GPU; Qwen3-TTS via vLLM-omni needs ~3 GB
   more and enables voice cloning.
@@ -287,8 +291,7 @@ wants help going to production, we offer paid engagements:
   priority fixes.
 - **Hosted / managed** — we run it, you embed it.
 
-Open an issue with the `commercial` label or reach the maintainer via the
-repository profile. <!-- TODO: replace with a direct contact (email / site) -->
+Write to **mynah@au56.com**, or open an issue with the `commercial` label.
 
 ## Repository layout
 

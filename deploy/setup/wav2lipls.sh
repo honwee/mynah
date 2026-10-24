@@ -10,7 +10,12 @@ set -euo pipefail
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_DIR="$SETUP_DIR/../compose"
 AVATAR_PORT="${AVATAR_PORT:-9420}"
-FACE_SIZE="${FACE_SIZE:-384}"
+FACE_SIZE="${FACE_SIZE:-256}"
+# 256 weights are public (GitHub Release); 384 is handed out in the community
+# group / on request (mynah@au56.com) — set WAV2LIPLS_CKPT_URL or drop the .pth in place.
+if [ -z "${WAV2LIPLS_CKPT_URL:-}" ] && [ "$FACE_SIZE" = "256" ]; then
+  WAV2LIPLS_CKPT_URL="https://github.com/honwee/mynah/releases/download/v0.1.0/wav2lipls-256.pth"
+fi
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"   # China-friendly HF mirror
 
 PL_MODELS_DIR="${PL_MODELS_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/.data/models}"
@@ -50,6 +55,7 @@ elif [ -n "${WAV2LIPLS_CKPT_URL:-}" ]; then
 else
   echo "[avatar] ✗ 缺少 checkpoint 且未配置 WAV2LIPLS_CKPT_URL。"
   echo "         在 deploy/compose/.env 设置 WAV2LIPLS_CKPT_URL，或把 .pth 放到 $CKPT"
+  echo "         256 版权重公开在 GitHub Release；384 版在社区群发放，或邮件 mynah@au56.com 索取。"
   exit 1
 fi
 

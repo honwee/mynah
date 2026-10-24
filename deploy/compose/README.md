@@ -98,7 +98,7 @@ unless you ask for it:
 | Engine | Profile | Port | Image | Notes |
 |---|---|---|---|---|
 | **FlashHead** (512 float head) | *(default)* | 9421 | `mynah/flashhead:dev` | best quality; heavier (diffusers/xfuser/mediapipe); needs `setup-flashhead.sh` |
-| **wav2lipLS** (192/384) | `wav2lipls` | 9420 | `mynah/avatar:dev` | light/low-VRAM, high frame-rate; `FACE_SIZE=192`/`384`; assets via `deploy/setup/wav2lipls.sh` (`WAV2LIPLS_CKPT_URL`/`DEFAULT_AVATAR_URL`) |
+| **wav2lipLS** (256/384) | `wav2lipls` | 9420 | `mynah/avatar:dev` | light/low-VRAM, high frame-rate; `FACE_SIZE=256` (public weights, auto-downloaded) / `384` (weights from the community group or mynah@au56.com); assets via `deploy/setup/wav2lipls.sh` (`WAV2LIPLS_CKPT_URL`/`DEFAULT_AVATAR_URL`) |
 
 To use wav2lipLS **instead of** FlashHead, name the services so they don't both
 grab a GPU, and point cored at its port:
