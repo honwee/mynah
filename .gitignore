@@ -29,3 +29,4 @@ workers/asr/*.opuspkts
 # Go build artifacts
 /cored
 /admind
+/toolprobe

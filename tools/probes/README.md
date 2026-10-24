@@ -9,6 +9,7 @@ contract and prints PASS/FAIL.
 | `p1verify` | AvatarEngine gRPC contract against a worker |
 | `p2probe` | cored media path end to end (pion WebRTC client, recvonly) |
 | `p3probe` | voice input: sendrecv session, spoken question → spoken answer |
+| `toolprobe` | host-page abilities: declares two abilities over the DataChannel, checks an action call lands mid-speech and a blocking call gets a filler + its result in the answer |
 | `mixprobe` | mixed engine pool: a channel bound to an engine lands on that engine's worker |
 | `capprobe` | pool capacity view from real GPU state |
 | `svcprobe` | Docker supervisor service listing |

@@ -4,7 +4,10 @@ go 1.22
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.5.5
+	github.com/pion/interceptor v0.1.29
+	github.com/pion/rtcp v1.2.15
 	github.com/pion/webrtc/v4 v4.0.0-beta.18
 	golang.org/x/crypto v0.29.0
 	google.golang.org/grpc v1.64.0
@@ -13,18 +16,15 @@ require (
 
 require (
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/pion/datachannel v1.5.8 // indirect
 	github.com/pion/dtls/v2 v2.2.10 // indirect
 	github.com/pion/ice/v3 v3.0.6 // indirect
-	github.com/pion/interceptor v0.1.29 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.15 // indirect
 	github.com/pion/rtp v1.8.10 // indirect
 	github.com/pion/sctp v1.8.19 // indirect
 	github.com/pion/sdp/v3 v3.0.9 // indirect

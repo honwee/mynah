@@ -118,6 +118,12 @@ type Session struct {
 	dcMu sync.Mutex
 	dc   *webrtc.DataChannel
 
+	// tools holds the abilities the HOST PAGE declared over that DataChannel,
+	// and the blocking calls currently out for execution. Empty (the default,
+	// and every visitor page today) = chat turns take the plain no-tools path.
+	// See abilities.go.
+	tools *toolRegistry
+
 	turnMu     sync.Mutex
 	turnCancel context.CancelFunc // cancels the in-flight speak goroutine
 
@@ -707,6 +713,7 @@ func (m *Manager) create(offerSDP, wantID string, bundle *ClientBundle, onReleas
 		createdAt: time.Now(),
 		idleSet:   idleSet, silencePkt: m.silence(), videoCodec: m.codec(),
 		bundle: bundle, release: onRelease,
+		tools: newToolRegistry(),
 	}
 	// Viewer PLI/FIR -> keyframe: speech frames are re-keyed by the worker,
 	// the idle replay re-enters its loop at a keyframe.
@@ -855,7 +862,10 @@ func (m *Manager) create(offerSDP, wantID string, bundle *ClientBundle, onReleas
 					_ = s.send(&pb.ClientFrame{Msg: &pb.ClientFrame_SetAction{
 						SetAction: &pb.SetAction{Action: "mouth:" + string(b)}}})
 				}
+				return
 			}
+			// Host-page ability registration and blocking-call results.
+			s.handleAbilities(typ, msg.Data)
 		})
 	})
 
@@ -1365,7 +1375,7 @@ func (s *Session) Chat(text string) {
 				flush(false)
 			}
 		}
-		reply, err := llmCli.StreamChat(tctx, s.ID, hist, s.ragContext(tctx, text), func(delta string) {
+		onDelta := func(delta string) {
 			s.instinctAgentText(delta)
 			// Strip <think>...</think> blocks (reasoning models) before the
 			// sentence slicer; tags may span delta boundaries via tagBuf.
@@ -1405,14 +1415,34 @@ func (s *Session) Chat(text string) {
 				tagBuf.WriteString(text[len(text)-keep:])
 				return
 			}
-		})
-		// flush any held-back tail (e.g. a lone '<' that wasn't a tag)
-		if !think {
-			for _, r := range tagBuf.String() {
-				feedRune(r)
-			}
 		}
-		flush(true)
+		// flushTail ends a round: emit any held-back tail (e.g. a lone '<' that
+		// wasn't a tag) and force out the last short fragment. Called once per
+		// tool round, not just once per turn, so a round's speech is fully in
+		// the pipeline before the next one starts.
+		flushTail := func() {
+			if !think {
+				for _, r := range tagBuf.String() {
+					feedRune(r)
+				}
+			}
+			tagBuf.Reset()
+			think = false
+			flush(true)
+		}
+
+		extra := s.ragContext(tctx, text)
+		var reply string
+		var err error
+		// Tool calling is opt-in twice over: the provider must implement the
+		// optional interface (openai does, dify/coze don't) AND the host page
+		// must have declared abilities. Neither = today's exact code path.
+		if tp, ok := llmCli.(core.ToolChatProvider); ok && len(s.tools.specs()) > 0 {
+			reply, err = s.chatTools(tctx, tp, hist, extra, onDelta, flushTail, sentences)
+		} else {
+			reply, err = llmCli.StreamChat(tctx, s.ID, hist, extra, onDelta)
+			flushTail()
+		}
 		close(sentences)
 		<-done
 		if err != nil && tctx.Err() == nil {

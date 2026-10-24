@@ -42,15 +42,21 @@ func (s *Server) SetChromaSource(fn func() config.Chroma) { s.chroma = fn }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/offer", s.rl.guard(s.handleOffer))
-	mux.HandleFunc("/human", s.rl.guard(s.handleHuman))
-	mux.HandleFunc("/interrupt_talk", s.rl.guard(s.handleInterrupt))
-	mux.HandleFunc("/is_speaking", s.handleIsSpeaking)
-	mux.HandleFunc("/set_audiotype", s.rl.guard(s.handleSetAudiotype))
+	// Every visitor endpoint is CORS-wrapped: an SDK-embedded page (a BI
+	// dashboard, say) reaches these from its own origin. See cors.go for why
+	// the Origin is reflected instead of filtered.
+	mux.HandleFunc("/offer", cors(s.rl.guard(s.handleOffer)))
+	mux.HandleFunc("/human", cors(s.rl.guard(s.handleHuman)))
+	mux.HandleFunc("/interrupt_talk", cors(s.rl.guard(s.handleInterrupt)))
+	mux.HandleFunc("/is_speaking", cors(s.handleIsSpeaking))
+	mux.HandleFunc("/set_audiotype", cors(s.rl.guard(s.handleSetAudiotype)))
 	// Action choreography (动作编排): list the baked one-shot clips and trigger
 	// one on a live session (channel visitor page demo buttons use these).
-	mux.HandleFunc("GET /actions", s.handleActions)
-	mux.HandleFunc("POST /action", s.rl.guard(s.handleAction))
+	mux.HandleFunc("GET /actions", cors(s.handleActions))
+	mux.HandleFunc("POST /action", cors(s.rl.guard(s.handleAction)))
+	for _, p := range []string{"/offer", "/human", "/interrupt_talk", "/actions", "/action"} {
+		mux.HandleFunc("OPTIONS "+p, preflight)
+	}
 	if s.channels != nil {
 		// Published channels: /channel/<slug> serves the visitor page
 		// (web/user/channel.html) and the page posts its WebRTC offer to
@@ -58,8 +64,10 @@ func (s *Server) Handler() http.Handler {
 		// is the public display-config feed the page fetches on load. Without
 		// --db these routes are absent and /channel/* falls through to a 404.
 		mux.HandleFunc("GET /channel/{slug}", s.handleChannelPage)
-		mux.HandleFunc("GET /channel/{slug}/config", s.handleChannelConfig)
-		mux.HandleFunc("POST /channel/offer", s.rl.guard(s.handleChannelOffer))
+		mux.HandleFunc("GET /channel/{slug}/config", cors(s.handleChannelConfig))
+		mux.HandleFunc("POST /channel/offer", cors(s.rl.guard(s.handleChannelOffer)))
+		mux.HandleFunc("OPTIONS /channel/offer", preflight)
+		mux.HandleFunc("OPTIONS /channel/{slug}/config", preflight)
 	}
 	if s.webDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(s.webDir)))

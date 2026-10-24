@@ -110,6 +110,45 @@ type AvatarDebugger interface {
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+	// Tool-calling extras, set only on the two message kinds a tool round
+	// needs: the assistant turn that requested calls (ToolCalls) and the
+	// "tool" messages carrying each result back (ToolCallID). Providers that
+	// don't implement ToolChatProvider never see them.
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// ToolSpec describes one ability the caller is willing to execute. Parameters
+// is a JSON Schema object, passed through to the model verbatim — cored never
+// interprets it, which is what lets a host page declare arbitrary abilities
+// (open a dashboard page, filter a chart) without cored knowing what they mean.
+type ToolSpec struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+// ToolCall is the model's request to run one ability. Arguments is kept as
+// raw JSON: it is forwarded to whoever registered the ability, not read here.
+type ToolCall struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// ToolChatProvider is the optional tool-calling widening of ChatProvider, in
+// the same shape as ChatDebugger -> ChatStreamDebugger: callers type-assert
+// for it and fall back to plain StreamChat when the configured provider
+// doesn't implement it (dify/coze speak their own agent protocols and manage
+// tools server-side, so they never will).
+//
+// One call = one round. When the model asks for tools it typically emits no
+// content, so the caller runs the returned calls, appends an assistant message
+// carrying ToolCalls plus one "tool" message per result, and calls again. The
+// caller is responsible for bounding the number of rounds.
+type ToolChatProvider interface {
+	StreamChatTools(ctx context.Context, convKey string, history, extra []ChatMessage,
+		tools []ToolSpec, onDelta func(string)) (string, []ToolCall, error)
 }
 
 // TurnDetector decides whether the user has finished speaking. Given the AUDIO
